@@ -1,2 +1,29 @@
-/target
-/ref
+# --- Rust Build Artifacts ---
+# Block all compiler outputs and dependency downloads
+/target/
+
+# --- Cargo Backup Files ---
+# Generated when modifying Cargo.toml fields safely
+**/*.rs.bk
+
+# --- Log Files ---
+# Ignore event logging files generated during test/execution
+*.log
+
+# --- Performance Profiling ---
+# Exclude execution profiling outputs and memory core dumps
+core
+__gmon_start__
+
+# --- Optional/Local Tooling ---
+# Remove these if you explicitly want to track them
+# Cargo vendor directory (if utilizing localized dependency caching)
+# !/vendor/
+
+
+# AI tooling
+.antigravitycli/
+.claude/
+.codex/
+.opencode/
+
