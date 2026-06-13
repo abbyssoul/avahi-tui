@@ -1,0 +1,148 @@
+use std::process::{Command, Stdio};
+
+use color_eyre::eyre::{Result, eyre};
+
+use crate::{
+    plumber::{ActionMode, CommandAction},
+    service::ServiceRecord,
+};
+
+#[derive(Debug, Clone)]
+pub struct PreparedCommand {
+    pub argv: Vec<String>,
+    pub mode: ActionMode,
+}
+
+pub fn prepare(action: &CommandAction, record: &ServiceRecord) -> Result<PreparedCommand> {
+    let expanded = interpolate(&action.command, record)?;
+    let argv = split_command_line(&expanded)?;
+    if argv.is_empty() {
+        return Err(eyre!("action command expanded to an empty argv"));
+    }
+    Ok(PreparedCommand {
+        argv,
+        mode: action.mode,
+    })
+}
+
+pub fn fork(command: &PreparedCommand) -> Result<()> {
+    let mut child = Command::new(&command.argv[0]);
+    child.args(&command.argv[1..]);
+    child
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(())
+}
+
+pub fn exec(command: PreparedCommand) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        let mut process = Command::new(&command.argv[0]);
+        process.args(&command.argv[1..]);
+        let err = process.exec();
+        Err(err.into())
+    }
+
+    #[cfg(not(unix))]
+    {
+        let status = Command::new(&command.argv[0])
+            .args(&command.argv[1..])
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(eyre!("process exited with status {status}"))
+        }
+    }
+}
+
+fn interpolate(template: &str, record: &ServiceRecord) -> Result<String> {
+    let mut output = String::new();
+    let mut chars = template.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '{' {
+            output.push(ch);
+            continue;
+        }
+        let mut field = String::new();
+        loop {
+            let Some(next) = chars.next() else {
+                return Err(eyre!("unterminated interpolation in `{template}`"));
+            };
+            if next == '}' {
+                break;
+            }
+            field.push(next);
+        }
+        let Some(value) = record.field(&field) else {
+            return Err(eyre!(
+                "service field `{field}` is unavailable for `{}`",
+                record.name
+            ));
+        };
+        output.push_str(&value);
+    }
+    Ok(output)
+}
+
+fn split_command_line(command: &str) -> Result<Vec<String>> {
+    let mut argv = Vec::new();
+    let mut current = String::new();
+    let mut chars = command.chars().peekable();
+    let mut quote: Option<char> = None;
+
+    while let Some(ch) = chars.next() {
+        match (quote, ch) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), '\\') => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            (Some(_), c) => current.push(c),
+            (None, '"' | '\'') => quote = Some(ch),
+            (None, '\\') => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            (None, c) if c.is_whitespace() => {
+                if !current.is_empty() {
+                    argv.push(std::mem::take(&mut current));
+                }
+            }
+            (None, c) => current.push(c),
+        }
+    }
+
+    if let Some(q) = quote {
+        return Err(eyre!("unterminated `{q}` quote in command"));
+    }
+    if !current.is_empty() {
+        argv.push(current);
+    }
+    Ok(argv)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plumber::ActionMode;
+
+    #[test]
+    fn interpolates_and_splits() {
+        let mut record = ServiceRecord::new("alpha", "_ssh._tcp", "local");
+        record.hostname = Some("alpha.local".to_string());
+        let action = CommandAction {
+            description: None,
+            command: "ssh '{hostname}'".to_string(),
+            mode: ActionMode::Execute,
+        };
+        let prepared = prepare(&action, &record).unwrap();
+        assert_eq!(prepared.argv, vec!["ssh", "alpha.local"]);
+    }
+}

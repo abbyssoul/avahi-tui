@@ -1,0 +1,12 @@
+[metadata]
+name = "open-https"
+description = "Open HTTPS service in a browser"
+requirements = ["xdg-open"]
+
+[match.service_type]
+regex = "^_https\\._tcp$"
+
+[action]
+description = "Open in browser"
+command = "xdg-open https://{hostname}:{port}"
+mode = "fork"

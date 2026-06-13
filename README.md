@@ -1,62 +1,133 @@
 Avahi-TUI: TUI browser for service discovery.
 
 ## What's it for?
-Avahi (implementation of Bojour / mDNS/DNS-SD protocol) allows to publish and discover
-services running on a local network. This TUI application allows user to see discovered services and 
-configure an application launcher for services.
 
-For example, launch TUI without arguments:
+Avahi, the common Linux implementation of Bonjour / mDNS / DNS-SD, allows services
+to be published and discovered on a local network. This TUI lets users browse
+discovered services, filter and group them, and launch configured actions for a
+selected service.
+
+Launch the TUI without arguments to browse the default `local` domain:
 
 ```sh
-./avahi-tui
+avahi-tui
 ```
 
-to see the list of local services. New services will be added to the list as they dynaically discovered.
+Browse another DNS-SD domain by passing it as the positional argument:
 
-
-The application is driven by user defined configuration files that specify match criteria. It comes pre-configured with a simple SSH opener:
 ```sh
-cat ~/.config/avahi-tui/commands/ssh.toml
+avahi-tui example.local
 ```
+
+For development without a running Avahi setup:
+
+```sh
+avahi-tui --fake-discovery
+```
+
+The app uses `avahi-browse` when available. If `avahi-browse` is missing, it
+falls back to sample records so the UI remains usable.
+
+## UI
+
+Default keys follow Vim-style conventions:
+
+- `j` / `down`: move down
+- `k` / `up`: move up
+- `enter`: show or run matching actions
+- `/`: fuzzy text filter
+- `t`: service type checklist filter
+- `g`: grouping selector
+- `?`: help
+- `q`: quit
+
+The service list supports fuzzy text search, service type filtering, and runtime
+grouping by logical service, host, service type, port, or address.
+
+## Configuration
+
+Command files follow the XDG Base Directory Specification. User command files are
+loaded from:
+
+```sh
+$XDG_CONFIG_HOME/avahi-tui/commands/*.toml
+```
+
+If `XDG_CONFIG_HOME` is not set, the fallback path is:
+
+```sh
+~/.config/avahi-tui/commands/*.toml
+```
+
+Additional command directories can be provided with:
+
+```sh
+avahi-tui --config-dir ./commands
+```
+
+Validate and list the registered commands with:
+
+```sh
+avahi-tui list-commands
+```
+
+To validate and list only the commands from a specific directory:
+
+```sh
+avahi-tui list-commands --config-dir ./commands
+```
+
+Keybindings can be overridden at:
+
+```sh
+$XDG_CONFIG_HOME/avahi-tui/keybindings.toml
+```
+
+## Command Files
+
+Each command file defines one action and structured match predicates. Example SSH
+opener:
 
 ```toml
 [metadata]
 name = "ssh"
 description = "SSH into a service"
 requirements = ["ssh"]
-match = 'proto in (tcp, udp), '
+
+[match.service_type]
+equals = "_ssh._tcp"
 
 [action]
 description = "SSH into the selected service"
-command = "ssh '{hostname}:{port}'"
-mode = "fork"
+command = "ssh {hostname}"
+mode = "execute"
 ```
 
-This simple config file defines a command, that is applicabe to a service of type `_ssh`, and when executed, will SSH into the selected service, using its adveritsed hostname and port.
-Note that action includes mode = "fork": Runs the command and returns to TUI when done.
 Supported action modes:
 
- - fork: Run command, return to TUI afterward. Used when you want to launch a browser, for example.
- - execute: Replace TUI with the command (doesn't return). User when you want to replace TUI instance with another terminal command.
+- `fork`: spawn the command and return to the TUI.
+- `execute`: restore the terminal and replace the TUI process with the command.
 
+Supported match predicates:
 
-### Configuration
-Configutaion files follow  XDG Base Directory Specification for configuration files. For local changes,
-user can add new config files into `$XDG_CONFIG_HOME` location (default is `~/.config/avahi-tui/`).
+- `equals`
+- `contains`
+- `regex`
 
-### Service matcher
+Supported service fields:
 
-When writing a customer config, a user required to specify an expression used to match a service record to that action.
-Such expression operates on a set of attributes of a service record:
- - name: Name of a service
- - type: Service type
- - domain: Doamin where the service is registered
- - hostname: Resolved name of the host where the service is advertised.
- - address: IP address of the service
- - port: Port on which the service is available.
- - txt: Text entry that the service advertised.
+- `name`
+- `service_type` or `type`
+- `domain`
+- `hostname`
+- `address`
+- `port`
+- `txt.<key>`
 
-Note all the fields above can be used in match expression as well as `action` section for command interpolation.
+The same fields can be used in action command interpolation, for example
+`{hostname}`, `{address}`, and `{port}`.
 
-
-Multiple configured actions can match the same service record. In that case TUI gives user an option to select what action should be taken.
+Multiple configured actions can match the same service. In that case, the TUI
+shows an action picker. If an action needs instance-specific fields such as
+`address` or `port` and the selected row contains multiple instances, the TUI
+asks which exact instance to use.

@@ -1,0 +1,12 @@
+[metadata]
+name = "open-http-alt"
+description = "Open HTTP service in a browser"
+requirements = ["xdg-open"]
+
+[match.service_type]
+regex = "^_http-alt\\._tcp$"
+
+[action]
+description = "Open in browser"
+command = "xdg-open http://{hostname}:{port}"
+mode = "fork"

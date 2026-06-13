@@ -1,0 +1,12 @@
+[metadata]
+name = "ssh"
+description = "SSH into a service"
+requirements = ["ssh"]
+
+[match.service_type]
+equals = "_ssh._tcp"
+
+[action]
+description = "SSH into the selected service"
+command = "ssh {hostname}"
+mode = "execute"
