@@ -52,8 +52,8 @@ These do not block an MVP, but should be resolved before polishing behavior:
 - `cli`
   - Parses flags and subcommands.
   - Initial flags:
+    - positional `domain`: DNS-SD domain to browse, defaulting to `local`.
     - `--config-dir <path>`: additional config directory.
-    - `--no-default-config`: disable bundled defaults.
     - `--service-type <type>`: optional discovery filter for development/testing.
 
 - `app`
@@ -275,12 +275,15 @@ The exact keybinding config schema can be finalized during implementation, but i
   - `shell-words` or equivalent argv parser
   - selected mDNS/zeroconf crate
 - Replace `src/main.rs` hello world with CLI parsing and terminal setup.
+- Parse an optional positional `domain` argument and default it to `local`.
 - Add module skeletons and error handling conventions.
 - Add basic `cargo fmt`, `cargo clippy`, and `cargo test` verification path.
 
 Exit criteria:
 
 - App starts and exits cleanly.
+- Running without arguments browses the `local` domain.
+- Passing a domain argument uses that domain for discovery.
 - Terminal is restored after quit or error.
 - Empty UI renders without service discovery wired in.
 
@@ -326,6 +329,7 @@ Exit criteria:
 - Implement `ServiceDiscovery` trait.
 - Add a fake discovery backend for tests and local UI development.
 - Implement the real mDNS backend.
+- Use the CLI-selected DNS-SD domain, defaulting to `local`.
 - Normalize discovered services into `ServiceRecord`.
 - Group records into `ServiceGroup` rows according to the active grouping mode.
 - Update app state from discovery events.

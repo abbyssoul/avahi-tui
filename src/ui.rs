@@ -1,36 +1,54 @@
+use std::collections::BTreeSet;
+
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
 use crate::{
     app::{App, AppMode},
-    service::{GroupingMode, ServiceRecord},
+    plumber::MatchResult,
+    service::{GroupingMode, ServiceGroup, ServiceRecord},
 };
+
+// ── palette ──────────────────────────────────────────────────────────────
+const ACCENT: Color = Color::Rgb(0x7a, 0xa2, 0xf7); // soft blue
+const ACCENT_DIM: Color = Color::Rgb(0x3b, 0x4a, 0x6b);
+const BG_BAR: Color = Color::Rgb(0x1a, 0x1b, 0x26);
+const BG_SEL: Color = Color::Rgb(0x28, 0x3b, 0x5c);
+const FG_DIM: Color = Color::Rgb(0x6b, 0x70, 0x89);
+const GOOD: Color = Color::Rgb(0x9e, 0xce, 0x6a); // green
+const WARN: Color = Color::Rgb(0xe0, 0xaf, 0x68); // amber
+const STAR: Color = Color::Rgb(0xf7, 0xce, 0x52); // yellow
+
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn render(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(3),
+            Constraint::Length(1), // top stats bar
+            Constraint::Length(1), // filter / search bar
+            Constraint::Min(6),    // body
+            Constraint::Length(1), // footer hints
         ])
         .split(area);
 
-    render_header(frame, app, chunks[0]);
+    render_top_bar(frame, app, chunks[0]);
+    render_filter_bar(frame, app, chunks[1]);
 
     let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(chunks[1]);
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(chunks[2]);
     render_services(frame, app, body[0]);
     render_details(frame, app, body[1]);
-    render_status(frame, app, chunks[2]);
+
+    render_footer(frame, app, chunks[3]);
 
     match app.mode {
         AppMode::TypeFilter => render_type_filter(frame, app),
@@ -42,246 +60,537 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     }
 }
 
-fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let search = if app.filter.text_query.is_empty() {
-        "<none>".to_string()
-    } else {
-        app.filter.text_query.clone()
+// ── top bar ──────────────────────────────────────────────────────────────
+fn render_top_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let spinner = SPINNER[(app.ticks / 2) as usize % SPINNER.len()];
+    let hosts = app
+        .records
+        .values()
+        .filter_map(|r| r.hostname.clone())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let types = app.service_types().len();
+
+    let sep = || Span::styled("  •  ", Style::default().fg(ACCENT_DIM));
+    let num = |value: usize| {
+        Span::styled(
+            format!("{value}"),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )
     };
-    let mode = match app.mode {
-        AppMode::Search => "search",
-        AppMode::Browse => "browse",
-        AppMode::TypeFilter => "type filter",
-        AppMode::Grouping => "grouping",
-        AppMode::ActionPicker => "actions",
-        AppMode::InstancePicker => "instances",
-        AppMode::Help => "help",
-    };
-    let title = format!(
-        "domain: {} | mode: {mode} | group: {} | search: {search}",
-        app.cli.domain, app.filter.grouping
-    );
+    let label = |text: &str| Span::styled(format!(" {text}"), Style::default().fg(FG_DIM));
+
+    let mut spans = vec![
+        Span::styled(format!(" {spinner} "), Style::default().fg(GOOD)),
+        Span::styled(
+            "avahi-tui",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        sep(),
+        num(app.records.len()),
+        label("services   "),
+        num(hosts),
+        label("hosts   "),
+        num(types),
+        label("types"),
+        sep(),
+        num(app.matcher.command_count()),
+        label("commands"),
+    ];
+
+    // right-aligned domain chip
+    let left_text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    let right = format!("  {}  ", app.cli.domain);
+    let pad = (area.width as usize)
+        .saturating_sub(left_text.chars().count())
+        .saturating_sub(right.chars().count());
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(
+        right,
+        Style::default()
+            .fg(BG_BAR)
+            .bg(ACCENT)
+            .add_modifier(Modifier::BOLD),
+    ));
+
     frame.render_widget(
-        Paragraph::new(title).block(Block::default().borders(Borders::ALL).title("avahi-tui")),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(BG_BAR)),
         area,
     );
 }
 
+// ── filter / search bar ──────────────────────────────────────────────────
+fn render_filter_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let searching = matches!(app.mode, AppMode::Search);
+    let prompt_style = if searching {
+        Style::default().fg(BG_BAR).bg(ACCENT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(ACCENT_DIM)
+    };
+
+    let mut spans = vec![Span::styled(" / ", prompt_style), Span::raw(" ")];
+
+    if app.filter.text_query.is_empty() && !searching {
+        spans.push(Span::styled(
+            "fuzzy filter — press / to search",
+            Style::default().fg(FG_DIM).add_modifier(Modifier::ITALIC),
+        ));
+    } else {
+        spans.push(Span::styled(
+            app.filter.text_query.clone(),
+            Style::default().fg(Color::White),
+        ));
+        if searching && (app.ticks / 4) % 2 == 0 {
+            spans.push(Span::styled("▌", Style::default().fg(ACCENT)));
+        }
+    }
+
+    // right-side chips: type filter + host filter
+    let mut chips: Vec<Span> = Vec::new();
+    let total_types = app.service_types().len();
+    let enabled = app.filter.enabled_service_types.len().min(total_types);
+    if total_types > 0 {
+        let narrowed = enabled < total_types;
+        chips.push(chip(
+            &format!(" types {enabled}/{total_types} "),
+            if narrowed { WARN } else { FG_DIM },
+        ));
+    }
+    if let Some(host) = &app.filter.host_filter {
+        chips.push(Span::raw(" "));
+        chips.push(chip(&format!(" host:{host} ✕ "), Color::Magenta));
+    }
+    chips.push(Span::raw(" "));
+    chips.push(chip(&format!(" group:{} ", app.filter.grouping), ACCENT));
+
+    let left_text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    let right_text: String = chips.iter().map(|s| s.content.as_ref()).collect();
+    let pad = (area.width as usize)
+        .saturating_sub(left_text.chars().count())
+        .saturating_sub(right_text.chars().count());
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.extend(chips);
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn chip(text: &str, color: Color) -> Span<'static> {
+    Span::styled(
+        text.to_string(),
+        Style::default()
+            .fg(BG_BAR)
+            .bg(color)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+// ── service list ─────────────────────────────────────────────────────────
 fn render_services(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let items = if app.visible_groups.is_empty() {
-        vec![ListItem::new("No services match the active filters")]
+    let total = app.visible_groups.len();
+    let inner_h = area.height.saturating_sub(2) as usize;
+
+    let title = if total == 0 {
+        Line::from(vec![Span::styled(
+            " services ",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )])
     } else {
-        app.visible_groups
-            .iter()
-            .enumerate()
-            .map(|(index, group)| {
-                let marker = if index == app.selected { "> " } else { "  " };
-                let line = format!(
-                    "{marker}{}  [{}]  {}",
-                    group.label,
-                    group.service_type,
-                    group.count_label()
-                );
-                let style = if index == app.selected {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                ListItem::new(line).style(style)
-            })
-            .collect()
+        let first = scroll_offset(app.selected, total, inner_h) + 1;
+        let last = (first + inner_h - 1).min(total);
+        Line::from(vec![
+            Span::styled(
+                " services ",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{first}-{last}/{total} "),
+                Style::default().fg(FG_DIM),
+            ),
+        ])
     };
 
-    frame.render_widget(
-        List::new(items).block(Block::default().borders(Borders::ALL).title("services")),
-        area,
-    );
+    let block = panel().title(title);
+
+    if total == 0 {
+        let spinner = SPINNER[(app.ticks / 2) as usize % SPINNER.len()];
+        let msg = if app.filter.is_active() {
+            vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  no services match the active filters",
+                    Style::default().fg(WARN),
+                )),
+                Line::from(Span::styled(
+                    "  press esc to clear search, t to adjust types",
+                    Style::default().fg(FG_DIM),
+                )),
+            ]
+        } else {
+            vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("  {spinner} listening for mDNS services on {}…", app.cli.domain),
+                    Style::default().fg(FG_DIM),
+                )),
+            ]
+        };
+        frame.render_widget(Paragraph::new(msg).block(block), area);
+        return;
+    }
+
+    let offset = scroll_offset(app.selected, total, inner_h);
+    let items: Vec<ListItem> = app
+        .visible_groups
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(inner_h)
+        .map(|(index, group)| {
+            let selected = index == app.selected;
+            let matches = app.group_match_counts.get(index).copied().unwrap_or(0);
+            ListItem::new(service_row(group, selected, matches))
+        })
+        .collect();
+
+    frame.render_widget(List::new(items).block(block), area);
 }
 
+fn service_row(group: &ServiceGroup, selected: bool, matches: usize) -> Line<'static> {
+    let color = category_color(&group.service_type);
+    let base = if selected {
+        Style::default().bg(BG_SEL)
+    } else {
+        Style::default()
+    };
+
+    let gutter = if selected {
+        Span::styled("▌", Style::default().fg(ACCENT).bg(BG_SEL))
+    } else {
+        Span::styled(" ", base)
+    };
+
+    let name_style = if selected {
+        base.fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        base.fg(Color::White)
+    };
+
+    let mut spans = vec![
+        gutter,
+        Span::styled(" ● ", base.fg(color)),
+        Span::styled(fixed(&group.label, 26), name_style),
+        Span::styled(format!("{:<16}", short_type(&group.service_type)), base.fg(color)),
+    ];
+
+    // instance count badge
+    let n = group.instances.len();
+    if n > 1 {
+        spans.push(Span::styled(
+            format!("×{n:<3}"),
+            base.fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        spans.push(Span::styled("    ", base));
+    }
+
+    // matching-commands badge
+    if matches > 0 {
+        spans.push(Span::styled(
+            format!("★{matches} "),
+            base.fg(STAR).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        spans.push(Span::styled("·  ", base.fg(ACCENT_DIM)));
+    }
+
+    // host hint
+    let host = group.hostname.as_deref().unwrap_or("…resolving");
+    spans.push(Span::styled(host.to_string(), base.fg(FG_DIM)));
+
+    Line::from(spans).style(base)
+}
+
+// ── details / preview ────────────────────────────────────────────────────
 fn render_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let lines = if let Some(group) = app.visible_groups.get(app.selected) {
-        let raw_name = group
-            .instances
-            .first()
-            .map(|record| record.name.as_str())
-            .unwrap_or(group.name.as_str());
-        let display_name = group
-            .instances
-            .first()
-            .map(ServiceRecord::display_name)
-            .unwrap_or_else(|| group.name.clone());
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled("Group", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(format!(": {}", group.label)),
-            ]),
-            Line::from(format!("Id: {}", group.id.0)),
-            Line::from(format!("Mode: {}", group.mode)),
-            Line::from(format!("Name: {display_name}")),
-            Line::from(format!("Type: {}", group.service_type)),
-            Line::from(format!("Domain: {}", group.domain)),
-            Line::from(format!(
-                "Host: {}",
-                group.hostname.as_deref().unwrap_or("<pending>")
-            )),
-            Line::from(format!(
-                "Port: {}",
-                group
-                    .port
-                    .map(|p| p.to_string())
-                    .unwrap_or_else(|| "<pending>".to_string())
-            )),
-            Line::from(format!("Instances: {}", group.instances.len())),
-            Line::from(format!(
-                "Last seen: {}s ago",
-                group.last_seen.elapsed().as_secs()
-            )),
-            Line::from(""),
-        ];
-        if raw_name != display_name {
-            lines.insert(4, Line::from(format!("Raw name: {raw_name}")));
-        }
-        if !group.txt.is_empty() {
-            lines.push(Line::from("TXT:"));
-            for (key, value) in &group.txt {
-                lines.push(Line::from(format!("  {key}={value}")));
-            }
-            lines.push(Line::from(""));
-        }
-        for record in group.instances.iter().take(8) {
-            lines.push(Line::from(instance_line(record)));
-        }
-        if group.instances.len() > 8 {
-            lines.push(Line::from(format!(
-                "... {} more",
-                group.instances.len() - 8
-            )));
-        }
-        lines
-    } else {
-        vec![Line::from("No service selected")]
+    let block = panel().title(Line::from(Span::styled(
+        " details ",
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    )));
+
+    let Some(group) = app.visible_groups.get(app.selected) else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  no service selected",
+                Style::default().fg(FG_DIM),
+            )))
+            .block(block),
+            area,
+        );
+        return;
     };
 
+    let color = category_color(&group.service_type);
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(vec![
+        Span::styled(" ● ", Style::default().fg(color)),
+        Span::styled(
+            group.label.clone(),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(field("type", &group.service_type, color));
+    lines.push(field("domain", &group.domain, FG_DIM));
+    lines.push(field(
+        "host",
+        group.hostname.as_deref().unwrap_or("…resolving"),
+        FG_DIM,
+    ));
+    lines.push(field(
+        "port",
+        &group
+            .port
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "…".to_string()),
+        FG_DIM,
+    ));
+
+    if !group.txt.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(section("TXT records"));
+        for (key, value) in group.txt.iter().take(6) {
+            lines.push(Line::from(vec![
+                Span::styled(format!("   {key}"), Style::default().fg(WARN)),
+                Span::styled(" = ", Style::default().fg(ACCENT_DIM)),
+                Span::styled(value.clone(), Style::default().fg(Color::White)),
+            ]));
+        }
+    }
+
+    // instance tree
+    lines.push(Line::from(""));
+    lines.push(section(&format!("instances ({})", group.instances.len())));
+    let last = group.instances.len().saturating_sub(1);
+    for (i, record) in group.instances.iter().take(8).enumerate() {
+        let branch = if i == last { "└─" } else { "├─" };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {branch} "), Style::default().fg(ACCENT_DIM)),
+            Span::styled("● ", Style::default().fg(category_color(&record.service_type))),
+            Span::styled(instance_endpoint(record), Style::default().fg(Color::White)),
+            Span::styled(
+                format!("  {}s", record.last_seen.elapsed().as_secs()),
+                Style::default().fg(FG_DIM),
+            ),
+        ]));
+    }
+    if group.instances.len() > 8 {
+        lines.push(Line::from(Span::styled(
+            format!("   … {} more", group.instances.len() - 8),
+            Style::default().fg(FG_DIM),
+        )));
+    }
+
+    // matching actions
+    lines.push(Line::from(""));
+    let actions = app.matcher.matches_group(group);
+    lines.push(section(&format!("actions ({})", actions.len())));
+    if actions.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "   no configured commands match this service",
+            Style::default().fg(FG_DIM).add_modifier(Modifier::ITALIC),
+        )));
+    } else {
+        for action in &actions {
+            lines.push(action_line(action));
+        }
+        lines.push(Line::from(Span::styled(
+            "   press ⏎ to run",
+            Style::default().fg(FG_DIM).add_modifier(Modifier::ITALIC),
+        )));
+    }
+
     frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title("details")),
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(block),
         area,
     );
 }
 
-fn render_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let type_count = app.filter.enabled_service_types.len();
-    let text = format!(
-        "{} | {} records | {} rows | {} type filters | / search | t types | g group | enter actions | ? help",
-        app.status,
-        app.records.len(),
-        app.visible_groups.len(),
-        type_count
-    );
+fn action_line(action: &MatchResult) -> Line<'static> {
+    let description = action
+        .command
+        .action
+        .description
+        .as_deref()
+        .or(action.command.description.as_deref())
+        .unwrap_or("");
+    let mode = action.command.action.mode.to_string();
+    let mut spans = vec![
+        Span::styled("   ★ ", Style::default().fg(STAR)),
+        Span::styled(
+            action.command.name.clone(),
+            Style::default().fg(GOOD).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if !description.is_empty() {
+        spans.push(Span::styled(
+            format!(" — {description}"),
+            Style::default().fg(Color::White),
+        ));
+    }
+    spans.push(Span::styled(
+        format!("  [{mode}]"),
+        Style::default().fg(ACCENT_DIM),
+    ));
+    Line::from(spans)
+}
+
+// ── footer ───────────────────────────────────────────────────────────────
+fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let hints: &[(&str, &str)] = match app.mode {
+        AppMode::Search => &[("type", "filter"), ("⏎/esc", "done"), ("^U", "clear")],
+        AppMode::TypeFilter => &[("jk", "move"), ("space", "toggle"), ("esc", "close")],
+        AppMode::Grouping => &[("jk", "move"), ("⏎", "select"), ("esc", "close")],
+        AppMode::ActionPicker | AppMode::InstancePicker => {
+            &[("jk", "move"), ("⏎", "run"), ("esc", "cancel")]
+        }
+        AppMode::Help => &[("esc", "close")],
+        AppMode::Browse => &[
+            ("jk", "move"),
+            ("⏎", "open"),
+            ("/", "search"),
+            ("t", "types"),
+            ("g", "group"),
+            ("s", "same-host"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+    };
+
+    let mut spans = vec![Span::raw(" ")];
+    for (key, label) in hints {
+        spans.push(Span::styled(
+            format!(" {key} "),
+            Style::default().fg(BG_BAR).bg(ACCENT).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!(" {label}   "),
+            Style::default().fg(FG_DIM),
+        ));
+    }
+
+    // right-aligned status message
+    let status = format!("  {} ", app.status);
+    let left_text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    let pad = (area.width as usize)
+        .saturating_sub(left_text.chars().count())
+        .saturating_sub(status.chars().count());
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(status, Style::default().fg(ACCENT_DIM)));
+
     frame.render_widget(
-        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("status")),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(BG_BAR)),
         area,
     );
 }
 
+// ── modals ───────────────────────────────────────────────────────────────
 fn render_type_filter(frame: &mut Frame<'_>, app: &App) {
     let service_types = app.service_types();
-    let items = if service_types.is_empty() {
-        vec![ListItem::new("No service types discovered yet")]
+    let items: Vec<ListItem> = if service_types.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "  no service types discovered yet",
+            Style::default().fg(FG_DIM),
+        )))]
     } else {
         service_types
             .iter()
             .enumerate()
             .map(|(index, service_type)| {
                 let enabled = app.filter.enabled_service_types.contains(service_type);
-                let marker = if index == app.type_filter_index {
-                    "> "
-                } else {
-                    "  "
-                };
-                let check = if enabled { "[x]" } else { "[ ]" };
-                let style = if index == app.type_filter_index {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
+                let selected = index == app.type_filter_index;
+                let base = if selected {
+                    Style::default().bg(BG_SEL)
                 } else {
                     Style::default()
                 };
-                ListItem::new(format!("{marker}{check} {service_type}")).style(style)
+                let check = if enabled {
+                    Span::styled(" ✓ ", base.fg(GOOD).add_modifier(Modifier::BOLD))
+                } else {
+                    Span::styled(" ○ ", base.fg(FG_DIM))
+                };
+                Line::from(vec![
+                    gutter_span(selected),
+                    check,
+                    Span::styled(" ● ", base.fg(category_color(service_type))),
+                    Span::styled(service_type.clone(), base.fg(Color::White)),
+                ])
+                .style(base)
+                .into()
             })
             .collect()
     };
     render_popup(
         frame,
-        "service types",
-        List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("space toggles, esc closes"),
-        ),
-        60,
+        " service types ",
+        "space toggles · esc closes",
+        List::new(items),
+        58,
         60,
     );
 }
 
 fn render_grouping(frame: &mut Frame<'_>, app: &App) {
-    let items = GroupingMode::ALL
+    let items: Vec<ListItem> = GroupingMode::ALL
         .iter()
         .enumerate()
         .map(|(index, mode)| {
-            let marker = if index == app.grouping_index {
-                "> "
-            } else {
-                "  "
-            };
-            let active = if *mode == app.filter.grouping {
-                " *"
-            } else {
-                ""
-            };
-            let style = if index == app.grouping_index {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+            let selected = index == app.grouping_index;
+            let active = *mode == app.filter.grouping;
+            let base = if selected {
+                Style::default().bg(BG_SEL)
             } else {
                 Style::default()
             };
-            ListItem::new(format!("{marker}{mode}{active}")).style(style)
+            let marker = if active {
+                Span::styled(" ● ", base.fg(GOOD))
+            } else {
+                Span::styled(" ○ ", base.fg(FG_DIM))
+            };
+            Line::from(vec![
+                gutter_span(selected),
+                marker,
+                Span::styled(
+                    mode.to_string(),
+                    base.fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+            ])
+            .style(base)
+            .into()
         })
-        .collect::<Vec<_>>();
+        .collect();
     render_popup(
         frame,
-        "group by",
-        List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("enter selects, esc closes"),
-        ),
-        50,
-        45,
+        " group by ",
+        "⏎ selects · esc closes",
+        List::new(items),
+        46,
+        40,
     );
 }
 
 fn render_action_picker(frame: &mut Frame<'_>, app: &App) {
-    let items = app
+    let items: Vec<ListItem> = app
         .action_matches
         .iter()
         .enumerate()
         .map(|(index, action)| {
-            let marker = if index == app.action_index {
-                "> "
+            let selected = index == app.action_index;
+            let base = if selected {
+                Style::default().bg(BG_SEL)
             } else {
-                "  "
+                Style::default()
             };
-            let needs = if action.needs_instance && action.matching_records.len() > 1 {
-                " | choose instance"
-            } else {
-                ""
-            };
+            let needs = action.needs_instance && action.matching_records.len() > 1;
             let description = action
                 .command
                 .action
@@ -289,35 +598,36 @@ fn render_action_picker(frame: &mut Frame<'_>, app: &App) {
                 .as_deref()
                 .or(action.command.description.as_deref())
                 .unwrap_or("");
-            let style = if index == app.action_index {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(format!(
-                "{marker}{} - {}{needs}",
-                action.command.name, description
-            ))
-            .style(style)
+            let mut spans = vec![
+                gutter_span(selected),
+                Span::styled("★ ", base.fg(STAR)),
+                Span::styled(
+                    action.command.name.clone(),
+                    base.fg(GOOD).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" — {description}"), base.fg(Color::White)),
+            ];
+            if needs {
+                spans.push(Span::styled(
+                    "  ⊙ choose instance",
+                    base.fg(WARN),
+                ));
+            }
+            Line::from(spans).style(base).into()
         })
-        .collect::<Vec<_>>();
+        .collect();
     render_popup(
         frame,
-        "actions",
-        List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("enter runs, esc closes"),
-        ),
+        " matching actions ",
+        "⏎ runs · esc closes",
+        List::new(items),
         70,
         50,
     );
 }
 
 fn render_instance_picker(frame: &mut Frame<'_>, app: &App) {
-    let items = app
+    let items: Vec<ListItem> = app
         .pending_action
         .as_ref()
         .map(|action| {
@@ -326,71 +636,190 @@ fn render_instance_picker(frame: &mut Frame<'_>, app: &App) {
                 .iter()
                 .enumerate()
                 .map(|(index, record)| {
-                    let marker = if index == app.instance_index {
-                        "> "
-                    } else {
-                        "  "
-                    };
-                    let style = if index == app.instance_index {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
+                    let selected = index == app.instance_index;
+                    let base = if selected {
+                        Style::default().bg(BG_SEL)
                     } else {
                         Style::default()
                     };
-                    ListItem::new(format!("{marker}{}", instance_line(record))).style(style)
+                    Line::from(vec![
+                        gutter_span(selected),
+                        Span::styled(
+                            "● ",
+                            base.fg(category_color(&record.service_type)),
+                        ),
+                        Span::styled(instance_endpoint(record), base.fg(Color::White)),
+                    ])
+                    .style(base)
+                    .into()
                 })
-                .collect::<Vec<_>>()
+                .collect()
         })
         .unwrap_or_default();
     render_popup(
         frame,
-        "select instance",
-        List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("enter runs, esc closes"),
-        ),
-        75,
+        " select instance ",
+        "⏎ runs · esc closes",
+        List::new(items),
+        72,
         55,
     );
 }
 
 fn render_help(frame: &mut Frame<'_>) {
-    let lines = vec![
-        Line::from("j/down, k/up: move selection"),
-        Line::from("enter: run matching action"),
-        Line::from("/: fuzzy filter by text"),
-        Line::from("t: service type checklist"),
-        Line::from("g: grouping selector"),
-        Line::from("q: quit"),
-        Line::from("esc: close modal or search"),
+    let rows = [
+        ("j / ↓", "move selection down"),
+        ("k / ↑", "move selection up"),
+        ("enter", "run matching action(s)"),
+        ("/", "fuzzy text filter"),
+        ("t", "service-type checklist"),
+        ("g", "change grouping"),
+        ("s", "filter to selected host"),
+        ("esc", "close modal / clear search"),
+        ("?", "toggle this help"),
+        ("q", "quit"),
     ];
+    let mut lines = vec![Line::from("")];
+    for (key, label) in rows {
+        lines.push(Line::from(vec![
+            Span::styled(format!("   {key:<8}"), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(label.to_string(), Style::default().fg(Color::White)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "   badges:  ×N instances   ★N matching commands",
+        Style::default().fg(FG_DIM),
+    )));
     render_popup(
         frame,
-        "help",
-        Paragraph::new(lines)
-            .alignment(Alignment::Left)
-            .block(Block::default().borders(Borders::ALL)),
-        55,
-        45,
+        " help ",
+        "esc closes",
+        Paragraph::new(lines).alignment(Alignment::Left),
+        58,
+        70,
     );
 }
 
-fn render_popup<W>(frame: &mut Frame<'_>, title: &str, widget: W, width: u16, height: u16)
-where
+fn render_popup<W>(
+    frame: &mut Frame<'_>,
+    title: &str,
+    hint: &str,
+    widget: W,
+    width: u16,
+    height: u16,
+) where
     W: ratatui::widgets::Widget,
 {
     let area = centered_rect(width, height, frame.area());
     frame.render_widget(Clear, area);
-    frame.render_widget(Block::default().borders(Borders::ALL).title(title), area);
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT))
+        .title(Span::styled(
+            title.to_string(),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            format!(" {hint} "),
+            Style::default().fg(FG_DIM),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
     frame.render_widget(widget, inner);
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────
+fn panel() -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT_DIM))
+}
+
+fn section(title: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!(" {title} "),
+        Style::default()
+            .fg(ACCENT)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    ))
+}
+
+fn field(label: &str, value: &str, value_color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!(" {label:>7}  "), Style::default().fg(FG_DIM)),
+        Span::styled(value.to_string(), Style::default().fg(value_color)),
+    ])
+}
+
+fn gutter_span(selected: bool) -> Span<'static> {
+    if selected {
+        Span::styled("▌", Style::default().fg(ACCENT).bg(BG_SEL))
+    } else {
+        Span::raw(" ")
+    }
+}
+
+fn instance_endpoint(record: &ServiceRecord) -> String {
+    let host = record.hostname.as_deref().unwrap_or("…resolving");
+    let addr = record
+        .address
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| "…".to_string());
+    let port = record
+        .port
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "…".to_string());
+    format!("{host}  {addr}:{port}")
+}
+
+/// Truncate to `width` display columns (single-width assumption), padding with
+/// spaces and adding an ellipsis when clipped.
+fn fixed(value: &str, width: usize) -> String {
+    let count = value.chars().count();
+    if count <= width {
+        format!("{value:<width$}")
+    } else {
+        let keep = width.saturating_sub(1);
+        let mut out: String = value.chars().take(keep).collect();
+        out.push('…');
+        out
+    }
+}
+
+fn short_type(service_type: &str) -> String {
+    // _https._tcp -> https
+    service_type
+        .trim_start_matches('_')
+        .split('.')
+        .next()
+        .unwrap_or(service_type)
+        .to_string()
+}
+
+fn category_color(service_type: &str) -> Color {
+    let t = short_type(service_type);
+    let t = t.as_str();
+    if matches!(t, "ssh" | "sftp-ssh" | "telnet" | "rfb" | "vnc" | "rdp" | "nx") {
+        GOOD
+    } else if matches!(t, "http" | "https" | "webdav" | "webdavs" | "caldav" | "carddav") {
+        ACCENT
+    } else if matches!(t, "ipp" | "ipps" | "printer" | "pdl-datastream" | "scanner" | "uscan") {
+        Color::Magenta
+    } else if matches!(t, "smb" | "afpovertcp" | "nfs" | "ftp" | "webdav-fs" | "sftp") {
+        WARN
+    } else if matches!(
+        t,
+        "airplay" | "raop" | "googlecast" | "spotify-connect" | "dlna" | "daap" | "sonos"
+    ) {
+        Color::Rgb(0xbb, 0x9a, 0xf7) // soft purple
+    } else if matches!(t, "workstation" | "device-info" | "homekit" | "hap" | "companion-link") {
+        Color::Cyan
+    } else {
+        FG_DIM
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -413,19 +842,13 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     horizontal[1]
 }
 
-fn instance_line(record: &ServiceRecord) -> String {
-    format!(
-        "{} {} host={} addr={} port={}",
-        record.display_name(),
-        record.service_type,
-        record.hostname.as_deref().unwrap_or("<pending>"),
-        record
-            .address
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "<pending>".to_string()),
-        record
-            .port
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "<pending>".to_string())
-    )
+fn scroll_offset(selected: usize, total: usize, view_h: usize) -> usize {
+    if view_h == 0 || total <= view_h {
+        return 0;
+    }
+    if selected < view_h {
+        0
+    } else {
+        (selected + 1 - view_h).min(total - view_h)
+    }
 }

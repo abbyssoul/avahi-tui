@@ -43,6 +43,8 @@ pub struct App {
     pub pending_action: Option<MatchResult>,
     pub instance_index: usize,
     pub status: String,
+    pub group_match_counts: Vec<usize>,
+    pub ticks: u64,
 }
 
 impl App {
@@ -74,6 +76,8 @@ impl App {
             pending_action: None,
             instance_index: 0,
             status,
+            group_match_counts: Vec::new(),
+            ticks: 0,
         }
     }
 
@@ -81,6 +85,7 @@ impl App {
         self.recompute_visible();
 
         loop {
+            self.ticks = self.ticks.wrapping_add(1);
             self.drain_discovery();
             terminal.draw(|frame| ui::render(frame, self))?;
 
@@ -136,6 +141,11 @@ impl App {
         self.filter.sync_service_types(&records);
         let filtered = self.filter.apply(&records);
         self.visible_groups = service::group_records(&filtered, self.filter.grouping);
+        self.group_match_counts = self
+            .visible_groups
+            .iter()
+            .map(|group| self.matcher.matches_group(group).len())
+            .collect();
         if let Some(previous_selection) = previous_selection
             && let Some(index) = self
                 .visible_groups
@@ -204,6 +214,9 @@ impl App {
                     .position(|mode| *mode == self.filter.grouping)
                     .unwrap_or(0);
                 self.mode = AppMode::Grouping;
+            }
+            _ if self.keybindings.is("browse", "same_host", key) => {
+                self.toggle_same_host_filter();
             }
             _ if self.keybindings.is("browse", "help", key) => self.mode = AppMode::Help,
             KeyCode::Char(ch) => {
@@ -400,6 +413,27 @@ impl App {
                 Ok(None)
             }
             ActionMode::Execute => Ok(Some(prepared)),
+        }
+    }
+
+    fn toggle_same_host_filter(&mut self) {
+        if self.filter.host_filter.is_some() {
+            self.filter.clear_host_filter();
+            self.status = "host filter cleared".to_string();
+            self.recompute_visible();
+            return;
+        }
+        match self
+            .visible_groups
+            .get(self.selected)
+            .and_then(|group| group.hostname.clone())
+        {
+            Some(host) => {
+                self.status = format!("filtering by host `{host}`");
+                self.filter.set_host_filter(host);
+                self.recompute_visible();
+            }
+            None => self.status = "selected service has no resolved host yet".to_string(),
         }
     }
 

@@ -7,6 +7,7 @@ pub struct FilterState {
     pub text_query: String,
     pub enabled_service_types: BTreeSet<String>,
     pub disabled_service_types: BTreeSet<String>,
+    pub host_filter: Option<String>,
     pub grouping: GroupingMode,
 }
 
@@ -16,6 +17,7 @@ impl Default for FilterState {
             text_query: String::new(),
             enabled_service_types: BTreeSet::new(),
             disabled_service_types: BTreeSet::new(),
+            host_filter: None,
             grouping: GroupingMode::LogicalService,
         }
     }
@@ -53,10 +55,28 @@ impl FilterState {
         self.text_query.clear();
     }
 
+    pub fn set_host_filter(&mut self, host: impl Into<String>) {
+        self.host_filter = Some(host.into());
+    }
+
+    pub fn clear_host_filter(&mut self) {
+        self.host_filter = None;
+    }
+
+    pub fn is_active(&self) -> bool {
+        !self.text_query.trim().is_empty()
+            || self.host_filter.is_some()
+            || !self.disabled_service_types.is_empty()
+    }
+
     pub fn apply(&self, records: &[ServiceRecord]) -> Vec<ServiceRecord> {
         records
             .iter()
             .filter(|record| self.enabled_service_types.contains(&record.service_type))
+            .filter(|record| match &self.host_filter {
+                Some(host) => record.hostname.as_deref() == Some(host.as_str()),
+                None => true,
+            })
             .filter(|record| {
                 self.text_query.trim().is_empty()
                     || fuzzy_match(&record.searchable_text(), self.text_query.trim())

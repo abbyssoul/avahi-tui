@@ -30,6 +30,7 @@ impl Default for KeyBindings {
         bindings.set("browse", "search", &["/"]);
         bindings.set("browse", "type_filter", &["t"]);
         bindings.set("browse", "grouping", &["g"]);
+        bindings.set("browse", "same_host", &["s"]);
         bindings.set("browse", "help", &["?"]);
         bindings.set("search", "close", &["esc", "enter"]);
         bindings.set("search", "clear", &["ctrl-u"]);

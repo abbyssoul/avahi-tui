@@ -171,51 +171,12 @@ impl ServiceRecord {
 pub struct ServiceGroup {
     pub id: ServiceGroupId,
     pub label: String,
-    pub mode: GroupingMode,
-    pub name: String,
     pub service_type: String,
     pub domain: String,
     pub hostname: Option<String>,
     pub port: Option<u16>,
     pub txt: BTreeMap<String, String>,
     pub instances: Vec<ServiceRecord>,
-    pub last_seen: Instant,
-}
-
-impl ServiceGroup {
-    pub fn count_label(&self) -> String {
-        match self.mode {
-            GroupingMode::LogicalService => format!(
-                "{} instance{}",
-                self.instances.len(),
-                plural(self.instances.len())
-            ),
-            GroupingMode::Host => format!(
-                "{} service{}",
-                self.instances.len(),
-                plural(self.instances.len())
-            ),
-            GroupingMode::ServiceType => format!(
-                "{} service{}",
-                self.instances.len(),
-                plural(self.instances.len())
-            ),
-            GroupingMode::Port => format!(
-                "{} service{}",
-                self.instances.len(),
-                plural(self.instances.len())
-            ),
-            GroupingMode::Address => format!(
-                "{} service{}",
-                self.instances.len(),
-                plural(self.instances.len())
-            ),
-        }
-    }
-}
-
-fn plural(count: usize) -> &'static str {
-    if count == 1 { "" } else { "s" }
 }
 
 pub fn group_records(records: &[ServiceRecord], mode: GroupingMode) -> Vec<ServiceGroup> {
@@ -241,23 +202,15 @@ pub fn group_records(records: &[ServiceRecord], mode: GroupingMode) -> Vec<Servi
             let first = instances[0].clone();
             let label = group_label(&first, mode);
             let id = ServiceGroupId(format!("{}:{}", mode.label(), group_key(&first, mode)));
-            let last_seen = instances
-                .iter()
-                .map(|record| record.last_seen)
-                .max()
-                .unwrap_or_else(Instant::now);
             ServiceGroup {
                 id,
                 label,
-                mode,
-                name: first.name,
                 service_type: first.service_type,
                 domain: first.domain,
                 hostname: first.hostname,
                 port: first.port,
                 txt: first.txt,
                 instances,
-                last_seen,
             }
         })
         .collect();
