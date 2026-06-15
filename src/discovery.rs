@@ -1,52 +1,15 @@
-use std::{
-    collections::BTreeMap,
-    net::IpAddr,
-    str::FromStr,
-    sync::mpsc,
-    thread,
-    time::Duration,
-};
+use std::{collections::BTreeMap, net::IpAddr, sync::mpsc, thread, time::Duration};
 
+use dns_sd_native::{
+    BrowseEvent, DiscoveredService, RemovedService, ServiceBrowserBuilder, TxtRecord,
+};
 use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;
-use zeroconf_tokio::prelude::*;
-use zeroconf_tokio::{
-    BrowserEvent, MdnsBrowser, MdnsBrowserAsync, ServiceDiscovery, ServiceRemoval, ServiceType,
-};
 
 use crate::{
     cli::Cli,
     service::{ServiceId, ServiceRecord},
 };
-
-/// DNS-SD service types browsed when the user does not pass `--service-type`.
-///
-/// `zeroconf` (and the underlying Avahi/Bonjour APIs it wraps) browses one
-/// concrete service type at a time; unlike `avahi-browse -a` there is no
-/// meta-query that enumerates every type on the link. We therefore sweep a
-/// curated set of the most common types in parallel.
-const DEFAULT_SERVICE_TYPES: &[&str] = &[
-    "_ssh._tcp",
-    "_sftp-ssh._tcp",
-    "_http._tcp",
-    "_https._tcp",
-    "_ipp._tcp",
-    "_ipps._tcp",
-    "_printer._tcp",
-    "_smb._tcp",
-    "_afpovertcp._tcp",
-    "_nfs._tcp",
-    "_webdav._tcp",
-    "_ftp._tcp",
-    "_workstation._tcp",
-    "_device-info._tcp",
-    "_rfb._tcp",
-    "_airplay._tcp",
-    "_raop._tcp",
-    "_googlecast._tcp",
-    "_homekit._tcp",
-    "_spotify-connect._tcp",
-];
 
 #[derive(Debug, Clone)]
 pub enum DiscoveryEvent {
@@ -91,7 +54,7 @@ pub fn start(cli: &Cli) -> DiscoveryHandle {
         };
     }
 
-    let worker = spawn_zeroconf(cli, tx, shutdown.clone());
+    let worker = spawn_browser(cli, tx, shutdown.clone());
     DiscoveryHandle {
         receiver: Some(rx),
         shutdown,
@@ -99,14 +62,13 @@ pub fn start(cli: &Cli) -> DiscoveryHandle {
     }
 }
 
-fn spawn_zeroconf(
+fn spawn_browser(
     cli: &Cli,
     tx: mpsc::Sender<DiscoveryEvent>,
     shutdown: CancellationToken,
 ) -> thread::JoinHandle<()> {
     let domain = cli.domain.clone();
     let service_type_filter = cli.service_type.clone();
-    let service_types = resolve_service_types(service_type_filter.as_deref());
 
     thread::spawn(move || {
         let runtime = match Builder::new_multi_thread().enable_all().build() {
@@ -120,126 +82,131 @@ fn spawn_zeroconf(
             }
         };
 
-        runtime.block_on(browse_loop(
-            service_types,
-            domain,
-            service_type_filter,
-            tx,
-            shutdown,
-        ));
+        runtime.block_on(browse_loop(domain, service_type_filter, tx, shutdown));
     })
 }
 
+/// Browses DNS-SD services via `dns-sd-native`. With no `--service-type` the
+/// browser discovers **every** service type on the link through the DNS-SD
+/// service-type meta-query, so there is no curated list of types to maintain.
 async fn browse_loop(
-    service_types: Vec<ServiceType>,
     domain: String,
     service_type_filter: Option<String>,
     tx: mpsc::Sender<DiscoveryEvent>,
     shutdown: CancellationToken,
 ) {
-    let mut workers = Vec::new();
-    for service_type in service_types {
-        let label = format_service_type(&service_type);
-        match MdnsBrowserAsync::new(MdnsBrowser::new(service_type)) {
-            Ok(mut browser) => match browser.start().await {
-                Ok(()) => {
-                    let tx = tx.clone();
-                    let token = shutdown.clone();
-                    workers.push(tokio::spawn(browse_one(browser, tx, token)));
-                }
-                Err(err) => {
-                    let _ = tx.send(DiscoveryEvent::Status(format!(
-                        "could not browse {label} ({err})"
-                    )));
-                }
-            },
-            Err(err) => {
-                let _ = tx.send(DiscoveryEvent::Status(format!(
-                    "could not create browser for {label} ({err})"
-                )));
-            }
+    let mut builder = ServiceBrowserBuilder::new();
+    if let Some(service_type) = &service_type_filter {
+        builder.service_type(service_type);
+    }
+    if !domain.is_empty() {
+        builder.domain(&domain);
+    }
+
+    let mut browser = match builder.browse().await {
+        Ok(browser) => browser,
+        Err(err) => {
+            let _ = tx.send(DiscoveryEvent::Status(format!(
+                "mDNS discovery unavailable ({err}); using sample records"
+            )));
+            spawn_fake(domain, service_type_filter, tx);
+            return;
         }
-    }
+    };
 
-    if workers.is_empty() {
-        let _ = tx.send(DiscoveryEvent::Status(
-            "mDNS discovery unavailable; using sample records".to_string(),
-        ));
-        spawn_fake(domain, service_type_filter, tx);
-        return;
-    }
+    let _ = tx.send(DiscoveryEvent::Status(match &service_type_filter {
+        Some(service_type) => format!("browsing {service_type} over mDNS"),
+        None => "browsing all service types over mDNS".to_string(),
+    }));
 
-    let _ = tx.send(DiscoveryEvent::Status(format!(
-        "browsing {} service type(s) over mDNS",
-        workers.len()
-    )));
-
-    for worker in workers {
-        let _ = worker.await;
-    }
-}
-
-async fn browse_one(
-    mut browser: MdnsBrowserAsync,
-    tx: mpsc::Sender<DiscoveryEvent>,
-    shutdown: CancellationToken,
-) {
     loop {
         tokio::select! {
-            _ = shutdown.cancelled() => {
-                let _ = browser.shutdown().await;
-                break;
-            }
-            event = browser.next() => {
-                match event {
-                    Some(Ok(event)) => {
-                        if tx.send(to_discovery_event(event)).is_err() {
-                            break;
+            _ = shutdown.cancelled() => break,
+            event = browser.recv() => match event {
+                Some(Ok(BrowseEvent::Found(service))) => {
+                    for record in records_from_discovery(&service) {
+                        if tx.send(DiscoveryEvent::Upsert(record)).is_err() {
+                            return;
                         }
                     }
-                    Some(Err(err)) => {
-                        let _ = tx.send(DiscoveryEvent::Status(format!("mDNS browse error: {err}")));
-                    }
-                    None => break,
                 }
+                Some(Ok(BrowseEvent::Removed(service))) => {
+                    if tx.send(DiscoveryEvent::Remove(id_from_removal(&service))).is_err() {
+                        return;
+                    }
+                }
+                Some(Err(err)) => {
+                    let _ = tx.send(DiscoveryEvent::Status(format!("mDNS browse error: {err}")));
+                }
+                None => break,
             }
         }
     }
+    // Dropping `browser` here stops the underlying native browse operation.
 }
 
-fn to_discovery_event(event: BrowserEvent) -> DiscoveryEvent {
-    match event {
-        BrowserEvent::Add(discovery) => DiscoveryEvent::Upsert(record_from_discovery(&discovery)),
-        BrowserEvent::Remove(removal) => DiscoveryEvent::Remove(id_from_removal(&removal)),
+/// Expands a resolved [`DiscoveredService`] into one [`ServiceRecord`] per
+/// resolved address (services can advertise several). A service that resolves
+/// without any addresses still yields a single record keyed by host and port.
+fn records_from_discovery(service: &DiscoveredService) -> Vec<ServiceRecord> {
+    let txt = txt_map(&service.txt_records);
+    let hostname = Some(service.host_name.as_str());
+    let port = Some(service.port);
+
+    if service.addresses.is_empty() {
+        return vec![upsert_record(
+            &service.name,
+            &service.service_type,
+            &service.domain,
+            hostname,
+            None,
+            port,
+            txt,
+        )];
     }
+
+    service
+        .addresses
+        .iter()
+        .map(|address| {
+            upsert_record(
+                &service.name,
+                &service.service_type,
+                &service.domain,
+                hostname,
+                Some(&address.to_string()),
+                port,
+                txt.clone(),
+            )
+        })
+        .collect()
 }
 
-fn record_from_discovery(discovery: &ServiceDiscovery) -> ServiceRecord {
-    let txt = discovery
-        .txt()
-        .as_ref()
-        .map(|txt| txt.iter().collect::<BTreeMap<String, String>>())
-        .unwrap_or_default();
-
-    upsert_record(
-        discovery.name(),
-        &format_service_type(discovery.service_type()),
-        discovery.domain(),
-        Some(discovery.host_name()),
-        Some(discovery.address()),
-        Some(*discovery.port()),
-        txt,
-    )
-}
-
-fn id_from_removal(removal: &ServiceRemoval) -> ServiceId {
-    ServiceRecord::new(removal.name(), removal.kind(), removal.domain())
+fn id_from_removal(service: &RemovedService) -> ServiceId {
+    ServiceRecord::new(&service.name, &service.service_type, &service.domain)
         .with_instance_id()
         .id
 }
 
+/// Flattens DNS-SD TXT records into the `key -> value` map carried by a
+/// [`ServiceRecord`]. Key-only entries (advertised without an `=`) and entries
+/// with an empty value both map to an empty string.
+fn txt_map(records: &[TxtRecord]) -> BTreeMap<String, String> {
+    records
+        .iter()
+        .map(|record| {
+            let value = record
+                .value
+                .as_deref()
+                .map(|value| String::from_utf8_lossy(value).into_owned())
+                .unwrap_or_default();
+            (record.key.clone(), value)
+        })
+        .collect()
+}
+
 /// Builds a resolved [`ServiceRecord`] from the individual fields reported by a
-/// browse event. Kept separate from the `zeroconf` types so it can be unit
+/// browse event. Kept separate from the `dns-sd-native` types so it can be unit
 /// tested without standing up the mDNS stack.
 fn upsert_record(
     name: &str,
@@ -259,23 +226,6 @@ fn upsert_record(
     record.port = port.filter(|port| *port != 0);
     record.txt = txt;
     record.with_instance_id()
-}
-
-fn format_service_type(service_type: &ServiceType) -> String {
-    format!("_{}._{}", service_type.name(), service_type.protocol())
-}
-
-fn resolve_service_types(filter: Option<&str>) -> Vec<ServiceType> {
-    if let Some(filter) = filter
-        && let Ok(service_type) = ServiceType::from_str(filter)
-    {
-        return vec![service_type];
-    }
-
-    DEFAULT_SERVICE_TYPES
-        .iter()
-        .filter_map(|kind| ServiceType::from_str(kind).ok())
-        .collect()
 }
 
 fn spawn_fake(
@@ -333,6 +283,22 @@ fn fake_records(domain: &str) -> Vec<ServiceRecord> {
 mod tests {
     use super::*;
 
+    fn discovered(name: &str, addresses: &[&str]) -> DiscoveredService {
+        DiscoveredService {
+            name: name.to_string(),
+            service_type: "_ssh._tcp".to_string(),
+            domain: "local".to_string(),
+            host_name: "workstation.local".to_string(),
+            port: 22,
+            addresses: addresses.iter().map(|a| a.parse().unwrap()).collect(),
+            txt_records: vec![TxtRecord {
+                key: "path".to_string(),
+                value: Some(b"/admin".to_vec()),
+            }],
+            interface_index: None,
+        }
+    }
+
     #[test]
     fn builds_resolved_record_from_browse_fields() {
         let mut txt = BTreeMap::new();
@@ -375,15 +341,53 @@ mod tests {
     }
 
     #[test]
-    fn explicit_filter_browses_single_type() {
-        let types = resolve_service_types(Some("_ssh._tcp"));
-        assert_eq!(types.len(), 1);
-        assert_eq!(format_service_type(&types[0]), "_ssh._tcp");
+    fn multiple_addresses_become_distinct_records() {
+        let service = discovered("workstation", &["192.168.1.20", "192.168.1.21"]);
+        let records = records_from_discovery(&service);
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].name, "workstation");
+        assert_eq!(records[0].port, Some(22));
+        assert_eq!(records[0].txt.get("path").map(String::as_str), Some("/admin"));
+        let addresses = records
+            .iter()
+            .filter_map(|record| record.address)
+            .collect::<Vec<_>>();
+        assert!(addresses.contains(&"192.168.1.20".parse().unwrap()));
+        assert!(addresses.contains(&"192.168.1.21".parse().unwrap()));
     }
 
     #[test]
-    fn missing_filter_falls_back_to_default_sweep() {
-        let types = resolve_service_types(None);
-        assert_eq!(types.len(), DEFAULT_SERVICE_TYPES.len());
+    fn addressless_service_still_yields_one_record() {
+        let service = discovered("workstation", &[]);
+        let records = records_from_discovery(&service);
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].hostname.as_deref(), Some("workstation.local"));
+        assert_eq!(records[0].address, None);
+        assert!(records[0].has_instance_data());
+    }
+
+    #[test]
+    fn removal_id_matches_pending_registration_key() {
+        let removed = RemovedService {
+            name: "workstation".to_string(),
+            service_type: "_ssh._tcp".to_string(),
+            domain: "local".to_string(),
+            interface_index: None,
+        };
+
+        let id = id_from_removal(&removed);
+        assert_eq!(id.registration_key(), "workstation|_ssh._tcp|local");
+    }
+
+    #[test]
+    fn key_only_txt_entry_maps_to_empty_value() {
+        let records = vec![TxtRecord {
+            key: "flag".to_string(),
+            value: None,
+        }];
+        let map = txt_map(&records);
+        assert_eq!(map.get("flag").map(String::as_str), Some(""));
     }
 }
