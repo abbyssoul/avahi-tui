@@ -75,7 +75,9 @@ fn render_top_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let num = |value: usize| {
         Span::styled(
             format!("{value}"),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )
     };
     let label = |text: &str| Span::styled(format!(" {text}"), Style::default().fg(FG_DIM));
@@ -123,7 +125,10 @@ fn render_top_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_filter_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let searching = matches!(app.mode, AppMode::Search);
     let prompt_style = if searching {
-        Style::default().fg(BG_BAR).bg(ACCENT).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(BG_BAR)
+            .bg(ACCENT)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(ACCENT_DIM)
     };
@@ -140,7 +145,7 @@ fn render_filter_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
             app.filter.text_query.clone(),
             Style::default().fg(Color::White),
         ));
-        if searching && (app.ticks / 4) % 2 == 0 {
+        if searching && (app.ticks / 4).is_multiple_of(2) {
             spans.push(Span::styled("▌", Style::default().fg(ACCENT)));
         }
     }
@@ -229,7 +234,10 @@ fn render_services(frame: &mut Frame<'_>, app: &App, area: Rect) {
             vec![
                 Line::from(""),
                 Line::from(Span::styled(
-                    format!("  {spinner} listening for mDNS services on {}…", app.cli.domain),
+                    format!(
+                        "  {spinner} listening for mDNS services on {}…",
+                        app.cli.domain
+                    ),
                     Style::default().fg(FG_DIM),
                 )),
             ]
@@ -279,7 +287,10 @@ fn service_row(group: &ServiceGroup, selected: bool, matches: usize) -> Line<'st
         gutter,
         Span::styled(" ● ", base.fg(color)),
         Span::styled(fixed(&group.label, 26), name_style),
-        Span::styled(format!("{:<16}", short_type(&group.service_type)), base.fg(color)),
+        Span::styled(
+            format!("{:<16}", short_type(&group.service_type)),
+            base.fg(color),
+        ),
     ];
 
     // instance count badge
@@ -336,7 +347,9 @@ fn render_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Span::styled(" ● ", Style::default().fg(color)),
         Span::styled(
             group.label.clone(),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
     ]));
     lines.push(field("type", &group.service_type, color));
@@ -375,7 +388,10 @@ fn render_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
         let branch = if i == last { "└─" } else { "├─" };
         lines.push(Line::from(vec![
             Span::styled(format!("  {branch} "), Style::default().fg(ACCENT_DIM)),
-            Span::styled("● ", Style::default().fg(category_color(&record.service_type))),
+            Span::styled(
+                "● ",
+                Style::default().fg(category_color(&record.service_type)),
+            ),
             Span::styled(instance_endpoint(record), Style::default().fg(Color::White)),
             Span::styled(
                 format!("  {}s", record.last_seen.elapsed().as_secs()),
@@ -410,7 +426,9 @@ fn render_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 
     frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).block(block),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(block),
         area,
     );
 }
@@ -470,7 +488,10 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     for (key, label) in hints {
         spans.push(Span::styled(
             format!(" {key} "),
-            Style::default().fg(BG_BAR).bg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BG_BAR)
+                .bg(ACCENT)
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
             format!(" {label}   "),
@@ -608,10 +629,7 @@ fn render_action_picker(frame: &mut Frame<'_>, app: &App) {
                 Span::styled(format!(" — {description}"), base.fg(Color::White)),
             ];
             if needs {
-                spans.push(Span::styled(
-                    "  ⊙ choose instance",
-                    base.fg(WARN),
-                ));
+                spans.push(Span::styled("  ⊙ choose instance", base.fg(WARN)));
             }
             Line::from(spans).style(base).into()
         })
@@ -644,10 +662,7 @@ fn render_instance_picker(frame: &mut Frame<'_>, app: &App) {
                     };
                     Line::from(vec![
                         gutter_span(selected),
-                        Span::styled(
-                            "● ",
-                            base.fg(category_color(&record.service_type)),
-                        ),
+                        Span::styled("● ", base.fg(category_color(&record.service_type))),
                         Span::styled(instance_endpoint(record), base.fg(Color::White)),
                     ])
                     .style(base)
@@ -682,7 +697,10 @@ fn render_help(frame: &mut Frame<'_>) {
     let mut lines = vec![Line::from("")];
     for (key, label) in rows {
         lines.push(Line::from(vec![
-            Span::styled(format!("   {key:<8}"), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("   {key:<8}"),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(label.to_string(), Style::default().fg(Color::White)),
         ]));
     }
@@ -802,20 +820,35 @@ fn short_type(service_type: &str) -> String {
 fn category_color(service_type: &str) -> Color {
     let t = short_type(service_type);
     let t = t.as_str();
-    if matches!(t, "ssh" | "sftp-ssh" | "telnet" | "rfb" | "vnc" | "rdp" | "nx") {
+    if matches!(
+        t,
+        "ssh" | "sftp-ssh" | "telnet" | "rfb" | "vnc" | "rdp" | "nx"
+    ) {
         GOOD
-    } else if matches!(t, "http" | "https" | "webdav" | "webdavs" | "caldav" | "carddav") {
+    } else if matches!(
+        t,
+        "http" | "https" | "webdav" | "webdavs" | "caldav" | "carddav"
+    ) {
         ACCENT
-    } else if matches!(t, "ipp" | "ipps" | "printer" | "pdl-datastream" | "scanner" | "uscan") {
+    } else if matches!(
+        t,
+        "ipp" | "ipps" | "printer" | "pdl-datastream" | "scanner" | "uscan"
+    ) {
         Color::Magenta
-    } else if matches!(t, "smb" | "afpovertcp" | "nfs" | "ftp" | "webdav-fs" | "sftp") {
+    } else if matches!(
+        t,
+        "smb" | "afpovertcp" | "nfs" | "ftp" | "webdav-fs" | "sftp"
+    ) {
         WARN
     } else if matches!(
         t,
         "airplay" | "raop" | "googlecast" | "spotify-connect" | "dlna" | "daap" | "sonos"
     ) {
         Color::Rgb(0xbb, 0x9a, 0xf7) // soft purple
-    } else if matches!(t, "workstation" | "device-info" | "homekit" | "hap" | "companion-link") {
+    } else if matches!(
+        t,
+        "workstation" | "device-info" | "homekit" | "hap" | "companion-link"
+    ) {
         Color::Cyan
     } else {
         FG_DIM
