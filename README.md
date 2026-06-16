@@ -29,10 +29,10 @@ Launch the TUI without arguments to browse the default `local` domain:
 avahi-tui
 ```
 
-Browse another DNS-SD domain by passing it as the positional argument:
+Browse another DNS-SD domain with the `--domain` (`-d`) flag:
 
 ```sh
-avahi-tui example.local
+avahi-tui --domain example.local
 ```
 
 For development without a running Avahi setup:

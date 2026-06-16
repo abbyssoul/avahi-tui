@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
 };
@@ -138,8 +138,10 @@ fn is_instance_field(field: &str) -> bool {
 #[derive(Debug, Default)]
 pub struct MatcherBuilder {
     commands: Vec<CommandConfig>,
-    names: BTreeSet<String>,
+    /// command name -> (layer it was last defined in, index into `commands`)
+    names: BTreeMap<String, (usize, usize)>,
     warnings: Vec<String>,
+    layer: usize,
 }
 
 impl MatcherBuilder {
@@ -147,14 +149,14 @@ impl MatcherBuilder {
         Self::default()
     }
 
+    /// Begin a new override layer. Commands added afterwards override same-named
+    /// commands from earlier layers; duplicates within one layer remain errors.
+    pub fn start_layer(&mut self) {
+        self.layer += 1;
+    }
+
     pub fn add_str(&mut self, source_name: &str, source: &str) -> Result<()> {
         let command = parse_command_config(source_name, source)?;
-        if !self.names.insert(command.name.clone()) {
-            return Err(eyre!(
-                "duplicate command name `{}` in {source_name}",
-                command.name
-            ));
-        }
         for requirement in &command.requirements {
             if !command_exists(requirement) {
                 self.warnings.push(format!(
@@ -163,7 +165,26 @@ impl MatcherBuilder {
                 ));
             }
         }
-        self.commands.push(command);
+        match self.names.get(&command.name).copied() {
+            Some((layer, _)) if layer == self.layer => {
+                return Err(eyre!(
+                    "duplicate command name `{}` in {source_name}",
+                    command.name
+                ));
+            }
+            Some((_, index)) => {
+                // Same name from an earlier layer: override it in place so the
+                // command keeps its original position in the list.
+                let name = command.name.clone();
+                self.commands[index] = command;
+                self.names.insert(name, (self.layer, index));
+            }
+            None => {
+                let index = self.commands.len();
+                self.names.insert(command.name.clone(), (self.layer, index));
+                self.commands.push(command);
+            }
+        }
         Ok(())
     }
 
@@ -179,8 +200,17 @@ impl MatcherBuilder {
     }
 }
 
+/// System-wide command directory, loaded as the base layer for every run.
+pub const SYSTEM_CONFIG_DIR: &str = "/etc/avahi-tui/commands";
+
+/// Ordered list of command directories, lowest precedence first. Commands in a
+/// later directory override same-named commands from an earlier one:
+///
+///   1. system-wide  (`/etc/avahi-tui/commands`)
+///   2. user-local   (`$XDG_CONFIG_HOME/avahi-tui/commands` or `~/.config/...`)
+///   3. command-line `--config-dir` entries, in the order given
 pub fn config_dirs(extra: &[PathBuf]) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
+    let mut dirs = vec![PathBuf::from(SYSTEM_CONFIG_DIR)];
     if let Some(home) = env::var_os("XDG_CONFIG_HOME") {
         dirs.push(PathBuf::from(home).join("avahi-tui").join("commands"));
     } else if let Some(home) = env::var_os("HOME") {
@@ -200,6 +230,7 @@ pub fn load_from_dirs(builder: &mut MatcherBuilder, dirs: &[PathBuf]) -> Result<
         if !dir.is_dir() {
             continue;
         }
+        builder.start_layer();
         let mut files = fs::read_dir(dir)?
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .filter(|path| path.extension().is_some_and(|ext| ext == "toml"))
@@ -465,6 +496,66 @@ fn optional_array(values: &BTreeMap<String, Value>, key: &str) -> Result<Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn command_toml(name: &str, command: &str) -> String {
+        format!(
+            r#"
+[metadata]
+name = "{name}"
+
+[match.service_type]
+equals = "_ssh._tcp"
+
+[action]
+command = "{command}"
+mode = "execute"
+"#
+        )
+    }
+
+    #[test]
+    fn later_layers_override_earlier_commands() {
+        let mut builder = MatcherBuilder::new();
+        builder.start_layer(); // system
+        builder
+            .add_str("system/ssh", &command_toml("ssh", "ssh system"))
+            .unwrap();
+        builder
+            .add_str("system/mosh", &command_toml("mosh", "mosh system"))
+            .unwrap();
+        builder.start_layer(); // user overlay
+        builder
+            .add_str("user/ssh", &command_toml("ssh", "ssh user"))
+            .unwrap();
+
+        let matcher = builder.build();
+        assert_eq!(matcher.command_count(), 2);
+        // The override keeps the command in its original position.
+        assert_eq!(matcher.commands()[0].name, "ssh");
+        assert_eq!(matcher.commands()[0].action.command, "ssh user");
+        assert_eq!(matcher.commands()[1].name, "mosh");
+    }
+
+    #[test]
+    fn duplicate_within_one_layer_is_rejected() {
+        let mut builder = MatcherBuilder::new();
+        builder.start_layer();
+        builder
+            .add_str("a", &command_toml("ssh", "ssh a"))
+            .unwrap();
+        let err = builder
+            .add_str("b", &command_toml("ssh", "ssh b"))
+            .unwrap_err();
+        assert!(err.to_string().contains("duplicate command name"));
+    }
+
+    #[test]
+    fn config_dirs_layer_system_then_user_then_extras() {
+        let extra = PathBuf::from("/tmp/avahi-extra");
+        let dirs = config_dirs(std::slice::from_ref(&extra));
+        assert_eq!(dirs.first(), Some(&PathBuf::from(SYSTEM_CONFIG_DIR)));
+        assert_eq!(dirs.last(), Some(&extra));
+    }
 
     #[test]
     fn parses_structured_matcher() {

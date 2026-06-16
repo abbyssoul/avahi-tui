@@ -22,7 +22,12 @@ pub fn parse() -> Result<Cli> {
     let matches = Command::new("avahi-tui")
         .about("TUI browser and launcher for DNS-SD services")
         .arg(
+            // A flag rather than a positional so it never competes with the
+            // subcommand slot — `avahi-tui <unknown>` now errors instead of
+            // being silently treated as a domain name.
             Arg::new("domain")
+                .long("domain")
+                .short('d')
                 .help("DNS-SD domain to browse")
                 .default_value("local")
                 .value_name("DOMAIN"),
@@ -30,7 +35,7 @@ pub fn parse() -> Result<Cli> {
         .arg(
             Arg::new("config-dir")
                 .long("config-dir")
-                .help("Additional command config directory")
+                .help("Extra command directory; repeatable, each overlays the previous")
                 .action(ArgAction::Append)
                 .value_name("PATH"),
         )
@@ -59,31 +64,20 @@ pub fn parse() -> Result<Cli> {
         )
         .get_matches();
 
-    print!(
-        "Loading configuration... {}",
-        matches
-            .subcommand()
-            .is_some()
-            .then(|| "(including subcommand)")
-            .unwrap_or("")
-    );
-
-    let config_dirs = collect_config_dirs(&matches);
-    let command = match matches.subcommand() {
-        None => CliCommand::Run,
-        Some(("list-commands", _)) => CliCommand::ListCommands,
-        _ => {
-            print!("Unknown command. Use `list-commands` to see available commands.");
-            return Err(clap::Error::new(ErrorKind::InvalidSubcommand).into());
+    // `--config-dir` is repeatable and is read from whichever argument context
+    // applies: the `list-commands` subcommand carries its own copy of the flag,
+    // while a plain run reads the top-level one.
+    let (command, config_dirs) = match matches.subcommand() {
+        None => (CliCommand::Run, collect_config_dirs(&matches)),
+        Some(("list-commands", sub)) => (CliCommand::ListCommands, collect_config_dirs(sub)),
+        Some((name, _)) => {
+            return Err(clap::Error::raw(
+                ErrorKind::InvalidSubcommand,
+                format!("unknown subcommand `{name}`; use `list-commands` to see available commands\n"),
+            )
+            .into());
         }
     };
-
-    // let (command, config_dirs) = if let Some(("list-commands", subcommand)) = matches.subcommand() {
-    //     let config_dirs = collect_config_dirs(subcommand);
-    //     (CliCommand::ListCommands, config_dirs)
-    // } else {
-    //     (CliCommand::Run, collect_config_dirs(&matches))
-    // };
 
     Ok(Cli {
         domain: matches
