@@ -119,4 +119,81 @@ mod tests {
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].name, "alpha");
     }
+
+    #[test]
+    fn discovered_types_are_unique_and_sorted() {
+        let records = vec![
+            ServiceRecord::new("printer", "_ipp._tcp", "local"),
+            ServiceRecord::new("shell", "_ssh._tcp", "local"),
+            ServiceRecord::new("other printer", "_ipp._tcp", "local"),
+        ];
+
+        assert_eq!(
+            FilterState::discovered_types(&records),
+            vec!["_ipp._tcp".to_string(), "_ssh._tcp".to_string()]
+        );
+    }
+
+    #[test]
+    fn sync_service_types_does_not_reenable_disabled_types() {
+        let mut filter = FilterState::default();
+        filter.sync_service_types(&[ServiceRecord::new("alpha", "_ssh._tcp", "local")]);
+        filter.toggle_service_type("_ssh._tcp");
+
+        filter.sync_service_types(&[
+            ServiceRecord::new("beta", "_ssh._tcp", "local"),
+            ServiceRecord::new("site", "_http._tcp", "local"),
+        ]);
+
+        assert!(!filter.enabled_service_types.contains("_ssh._tcp"));
+        assert!(filter.disabled_service_types.contains("_ssh._tcp"));
+        assert!(filter.enabled_service_types.contains("_http._tcp"));
+    }
+
+    #[test]
+    fn toggling_disabled_type_reenables_it() {
+        let mut filter = FilterState::default();
+        filter.sync_service_types(&[ServiceRecord::new("alpha", "_ssh._tcp", "local")]);
+
+        filter.toggle_service_type("_ssh._tcp");
+        filter.toggle_service_type("_ssh._tcp");
+
+        assert!(filter.enabled_service_types.contains("_ssh._tcp"));
+        assert!(!filter.disabled_service_types.contains("_ssh._tcp"));
+    }
+
+    #[test]
+    fn host_filter_matches_exact_hostname_and_can_be_cleared() {
+        let mut alpha = ServiceRecord::new("alpha", "_ssh._tcp", "local");
+        alpha.hostname = Some("alpha.local".to_string());
+        let mut beta = ServiceRecord::new("beta", "_ssh._tcp", "local");
+        beta.hostname = Some("beta.local".to_string());
+        let records = vec![alpha, beta];
+
+        let mut filter = FilterState::default();
+        filter.sync_service_types(&records);
+        filter.set_host_filter("alpha.local");
+
+        assert!(filter.is_active());
+        assert_eq!(filter.apply(&records)[0].name, "alpha");
+
+        filter.clear_host_filter();
+        assert!(!filter.is_active());
+        assert_eq!(filter.apply(&records).len(), 2);
+    }
+
+    #[test]
+    fn text_query_matches_searchable_txt_and_instance_fields() {
+        let mut printer = ServiceRecord::new("printer", "_ipp._tcp", "local");
+        printer.hostname = Some("print.local".to_string());
+        printer.port = Some(631);
+        printer
+            .txt
+            .insert("note".to_string(), "third floor".to_string());
+        let mut filter = FilterState::default();
+        filter.sync_service_types(&[printer.clone()]);
+        filter.text_query = "flr".to_string();
+
+        assert_eq!(filter.apply(&[printer]).len(), 1);
+    }
 }

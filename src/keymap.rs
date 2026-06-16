@@ -192,14 +192,142 @@ fn parse_key_array(path: &Path, line_no: usize, value: &str) -> Result<Vec<KeySp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temp_file(name: &str, source: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "avahi-tui-keymap-test-{name}-{}-{unique}.toml",
+            std::process::id()
+        ));
+        fs::write(&path, source).unwrap();
+        path
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(ch: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
+    }
 
     #[test]
     fn defaults_include_vim_navigation() {
         let bindings = KeyBindings::default();
-        assert!(bindings.is(
-            "browse",
-            "down",
-            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)
-        ));
+        assert!(bindings.is("browse", "down", key(KeyCode::Char('j'))));
+    }
+
+    #[test]
+    fn load_replaces_default_command_bindings_from_file() {
+        let path = temp_file(
+            "override",
+            r#"
+[browse]
+quit = ["x", "ctrl-x"]
+"#,
+        );
+
+        let bindings = KeyBindings::load(std::slice::from_ref(&path)).unwrap();
+
+        assert!(bindings.is("browse", "quit", key(KeyCode::Char('x'))));
+        assert!(bindings.is("browse", "quit", ctrl('x')));
+        assert!(!bindings.is("browse", "quit", key(KeyCode::Char('q'))));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn later_files_override_earlier_files() {
+        let first = temp_file(
+            "first",
+            r#"
+[picker]
+select = ["space"]
+"#,
+        );
+        let second = temp_file(
+            "second",
+            r#"
+[picker]
+select = ["tab"]
+"#,
+        );
+
+        let bindings = KeyBindings::load(&[first.clone(), second.clone()]).unwrap();
+
+        assert!(bindings.is("picker", "select", key(KeyCode::Tab)));
+        assert!(!bindings.is("picker", "select", key(KeyCode::Char(' '))));
+
+        fs::remove_file(first).unwrap();
+        fs::remove_file(second).unwrap();
+    }
+
+    #[test]
+    fn key_aliases_and_comments_are_parsed() {
+        let path = temp_file(
+            "aliases",
+            r#"
+# full-line comment
+[help]
+close = ["escape", "backspace"] # trailing comment
+"#,
+        );
+
+        let bindings = KeyBindings::load(std::slice::from_ref(&path)).unwrap();
+
+        assert!(bindings.is("help", "close", key(KeyCode::Esc)));
+        assert!(bindings.is("help", "close", key(KeyCode::Backspace)));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn ctrl_binding_does_not_match_plain_key() {
+        let bindings = KeyBindings::default();
+
+        assert!(bindings.is("common", "quit", ctrl('c')));
+        assert!(!bindings.is("common", "quit", key(KeyCode::Char('c'))));
+    }
+
+    #[test]
+    fn invalid_files_report_line_or_key_errors() {
+        let outside_section = temp_file("outside-section", r#"quit = ["q"]"#);
+        let unquoted = temp_file(
+            "unquoted",
+            r#"
+[browse]
+quit = [q]
+"#,
+        );
+        let unsupported = temp_file(
+            "unsupported",
+            r#"
+[browse]
+quit = ["meta-q"]
+"#,
+        );
+
+        let outside_err = KeyBindings::load(std::slice::from_ref(&outside_section)).unwrap_err();
+        let unquoted_err = KeyBindings::load(std::slice::from_ref(&unquoted)).unwrap_err();
+        let unsupported_err = KeyBindings::load(std::slice::from_ref(&unsupported)).unwrap_err();
+
+        assert!(outside_err.to_string().contains("outside a section"));
+        assert!(
+            unquoted_err
+                .to_string()
+                .contains("keys must be quoted strings")
+        );
+        assert!(unsupported_err.to_string().contains("unsupported key"));
+
+        fs::remove_file(outside_section).unwrap();
+        fs::remove_file(unquoted).unwrap();
+        fs::remove_file(unsupported).unwrap();
     }
 }

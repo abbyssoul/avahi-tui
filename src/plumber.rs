@@ -477,6 +477,11 @@ fn optional_array(values: &BTreeMap<String, Value>, key: &str) -> Result<Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        net::{IpAddr, Ipv4Addr},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn command_toml(name: &str, command: &str) -> String {
         format!(
@@ -492,6 +497,19 @@ command = "{command}"
 mode = "execute"
 "#
         )
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "avahi-tui-plumber-test-{name}-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
@@ -576,6 +594,72 @@ mode = "execute"
     }
 
     #[test]
+    fn parses_optional_metadata_action_description_and_fork_mode() {
+        let mut builder = MatcherBuilder::new();
+        builder
+            .add_str(
+                "printer",
+                r#"
+[metadata]
+name = "open-printer"
+description = "Open printer admin"
+requirements = ["xdg-open", "browser, optional"]
+
+[match.service_type]
+equals = "_ipp._tcp"
+
+[action]
+description = "Open the printer web UI"
+command = "xdg-open http://{hostname}:{port}"
+mode = "fork"
+"#,
+            )
+            .unwrap();
+
+        let matcher = builder.build();
+        let command = &matcher.commands()[0];
+
+        assert_eq!(command.name, "open-printer");
+        assert_eq!(command.description.as_deref(), Some("Open printer admin"));
+        assert_eq!(
+            command.requirements,
+            vec!["xdg-open".to_string(), "browser, optional".to_string()]
+        );
+        assert_eq!(
+            command.action.description.as_deref(),
+            Some("Open the printer web UI")
+        );
+        assert_eq!(command.action.mode, ActionMode::Fork);
+        assert_eq!(command.action.mode.to_string(), "fork");
+    }
+
+    #[test]
+    fn execute_mode_accepts_exec_alias() {
+        let mut builder = MatcherBuilder::new();
+        builder
+            .add_str(
+                "exec-alias",
+                r#"
+[metadata]
+name = "ssh"
+
+[match.service_type]
+equals = "_ssh._tcp"
+
+[action]
+command = "ssh {hostname}"
+mode = "exec"
+"#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            builder.build().commands()[0].action.mode,
+            ActionMode::Execute
+        );
+    }
+
+    #[test]
     fn matcher_filters_records() {
         let mut builder = MatcherBuilder::new();
         builder
@@ -601,6 +685,162 @@ mode = "execute"
             crate::service::group_records(&[record], crate::service::GroupingMode::LogicalService)
                 .remove(0);
         assert_eq!(matcher.matches_group(&group).len(), 1);
+    }
+
+    #[test]
+    fn matcher_supports_contains_regex_and_txt_predicates() {
+        let mut builder = MatcherBuilder::new();
+        builder
+            .add_str(
+                "printer-admin",
+                r#"
+[metadata]
+name = "printer-admin"
+
+[match.service_type]
+equals = "_ipp._tcp"
+
+[match.hostname]
+regex = "^print-[0-9]+[.]local$"
+
+[match.txt.path]
+contains = "admin"
+
+[action]
+command = "xdg-open http://{hostname}/{txt.path}"
+mode = "fork"
+"#,
+            )
+            .unwrap();
+        let matcher = builder.build();
+        let mut matching = ServiceRecord::new("Printer", "_ipp._tcp", "local");
+        matching.hostname = Some("print-01.local".to_string());
+        matching
+            .txt
+            .insert("path".to_string(), "admin/status".to_string());
+        let mut wrong_txt = ServiceRecord::new("Printer", "_ipp._tcp", "local");
+        wrong_txt.hostname = Some("print-02.local".to_string());
+        wrong_txt
+            .txt
+            .insert("path".to_string(), "ipp/print".to_string());
+        let group = crate::service::group_records(
+            &[matching, wrong_txt],
+            crate::service::GroupingMode::ServiceType,
+        )
+        .remove(0);
+
+        let matches = matcher.matches_group(&group);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].matching_records.len(), 1);
+        assert_eq!(
+            matches[0].matching_records[0].hostname.as_deref(),
+            Some("print-01.local")
+        );
+    }
+
+    #[test]
+    fn missing_instance_field_prevents_a_match() {
+        let mut builder = MatcherBuilder::new();
+        builder
+            .add_str(
+                "ssh-port",
+                r#"
+[metadata]
+name = "ssh-port"
+
+[match.port]
+equals = "22"
+
+[action]
+command = "ssh {hostname}"
+mode = "execute"
+"#,
+            )
+            .unwrap();
+        let matcher = builder.build();
+        let record = ServiceRecord::new("alpha", "_ssh._tcp", "local");
+        let group =
+            crate::service::group_records(&[record], crate::service::GroupingMode::LogicalService)
+                .remove(0);
+
+        assert!(matcher.matches_group(&group).is_empty());
+    }
+
+    #[test]
+    fn instance_specific_predicates_and_templates_request_instance_selection() {
+        let mut builder = MatcherBuilder::new();
+        builder
+            .add_str(
+                "by-address",
+                r#"
+[metadata]
+name = "by-address"
+
+[match.address]
+regex = "^192[.]0[.]2[.]"
+
+[action]
+command = "echo {hostname}"
+mode = "execute"
+"#,
+            )
+            .unwrap();
+        builder
+            .add_str(
+                "by-port-template",
+                r#"
+[metadata]
+name = "by-port-template"
+
+[match.service_type]
+equals = "_http._tcp"
+
+[action]
+command = "curl http://{hostname}:{port}"
+mode = "execute"
+"#,
+            )
+            .unwrap();
+        builder
+            .add_str(
+                "by-host-template",
+                r#"
+[metadata]
+name = "by-host-template"
+
+[match.service_type]
+equals = "_http._tcp"
+
+[action]
+command = "open http://{hostname}"
+mode = "execute"
+"#,
+            )
+            .unwrap();
+        let matcher = builder.build();
+        let mut record = ServiceRecord::new("site", "_http._tcp", "local");
+        record.hostname = Some("site.local".to_string());
+        record.address = Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)));
+        record.port = Some(8080);
+        let group =
+            crate::service::group_records(&[record], crate::service::GroupingMode::LogicalService)
+                .remove(0);
+
+        let matches = matcher.matches_group(&group);
+        let needs_instance = matches
+            .iter()
+            .map(|result| (result.command.name.as_str(), result.needs_instance))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            needs_instance,
+            vec![
+                ("by-address", true),
+                ("by-port-template", true),
+                ("by-host-template", false),
+            ]
+        );
     }
 
     #[test]
@@ -646,5 +886,130 @@ mode = "execute"
             .map(|command| command.name.as_str())
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["ssh", "open-http"]);
+    }
+
+    #[test]
+    fn load_from_dirs_loads_sorted_toml_files_and_ignores_other_files() {
+        let dir = temp_dir("load-sorted");
+        fs::write(dir.join("02-second.toml"), command_toml("second", "second")).unwrap();
+        fs::write(dir.join("01-first.toml"), command_toml("first", "first")).unwrap();
+        fs::write(dir.join("ignored.txt"), command_toml("ignored", "ignored")).unwrap();
+
+        let mut builder = MatcherBuilder::new();
+        load_from_dirs(&mut builder, std::slice::from_ref(&dir)).unwrap();
+
+        let matcher = builder.build();
+        let names = matcher
+            .commands()
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["first", "second"]);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn load_from_dirs_allows_later_directories_to_override() {
+        let base = temp_dir("base");
+        let overlay = temp_dir("overlay");
+        fs::write(base.join("ssh.toml"), command_toml("ssh", "ssh base")).unwrap();
+        fs::write(overlay.join("ssh.toml"), command_toml("ssh", "ssh overlay")).unwrap();
+
+        let mut builder = MatcherBuilder::new();
+        load_from_dirs(&mut builder, &[base.clone(), overlay.clone()]).unwrap();
+
+        let matcher = builder.build();
+        assert_eq!(matcher.command_count(), 1);
+        assert_eq!(matcher.commands()[0].action.command, "ssh overlay");
+
+        fs::remove_dir_all(base).unwrap();
+        fs::remove_dir_all(overlay).unwrap();
+    }
+
+    #[test]
+    fn invalid_command_configs_return_actionable_errors() {
+        let cases = [
+            (
+                "no-predicates",
+                r#"
+[metadata]
+name = "empty"
+
+[action]
+command = "true"
+mode = "execute"
+"#,
+                "has no match predicates",
+            ),
+            (
+                "bad-mode",
+                r#"
+[metadata]
+name = "bad-mode"
+
+[match.service_type]
+equals = "_ssh._tcp"
+
+[action]
+command = "ssh"
+mode = "daemon"
+"#,
+                "invalid action mode",
+            ),
+            (
+                "bad-section",
+                r#"
+[metadata]
+name = "bad-section"
+
+[commands]
+name = "ignored"
+"#,
+                "unsupported section",
+            ),
+            (
+                "bad-requirements",
+                r#"
+[metadata]
+name = "bad-requirements"
+requirements = "ssh"
+
+[match.service_type]
+equals = "_ssh._tcp"
+
+[action]
+command = "ssh"
+mode = "execute"
+"#,
+                "`requirements` must be an array",
+            ),
+            (
+                "bad-predicate",
+                r#"
+[metadata]
+name = "bad-predicate"
+
+[match.service_type]
+starts_with = "_ssh"
+
+[action]
+command = "ssh"
+mode = "execute"
+"#,
+                "unsupported predicate",
+            ),
+        ];
+
+        for (source_name, source, expected) in cases {
+            let mut builder = MatcherBuilder::new();
+            let err = builder.add_str(source_name, source).unwrap_err();
+            assert!(
+                err.to_string().contains(expected),
+                "expected `{}` to contain `{}`",
+                err,
+                expected
+            );
+        }
     }
 }

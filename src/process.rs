@@ -132,6 +132,7 @@ fn split_command_line(command: &str) -> Result<Vec<String>> {
 mod tests {
     use super::*;
     use crate::plumber::ActionMode;
+    use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
     fn interpolates_and_splits() {
@@ -144,5 +145,113 @@ mod tests {
         };
         let prepared = prepare(&action, &record).unwrap();
         assert_eq!(prepared.argv, vec!["ssh", "alpha.local"]);
+    }
+
+    #[test]
+    fn prepares_all_supported_service_fields() {
+        let mut record = ServiceRecord::new("Kitchen Printer", "_ipp._tcp", "local");
+        record.hostname = Some("printer.local".to_string());
+        record.address = Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)));
+        record.port = Some(631);
+        record
+            .txt
+            .insert("path".to_string(), "/ipp/print".to_string());
+        let action = CommandAction {
+            description: None,
+            command: "open '{name}' {service_type} {domain} {hostname} {address} {port} {txt.path}"
+                .to_string(),
+            mode: ActionMode::Fork,
+        };
+
+        let prepared = prepare(&action, &record).unwrap();
+
+        assert_eq!(prepared.mode, ActionMode::Fork);
+        assert_eq!(
+            prepared.argv,
+            vec![
+                "open",
+                "Kitchen Printer",
+                "_ipp._tcp",
+                "local",
+                "printer.local",
+                "192.0.2.20",
+                "631",
+                "/ipp/print",
+            ]
+        );
+    }
+
+    #[test]
+    fn splits_quoted_and_escaped_arguments() {
+        let record = ServiceRecord::new("alpha", "_ssh._tcp", "local");
+        let action = CommandAction {
+            description: None,
+            command: r#"printf "two words" one\ arg 'single quoted' "\\""#.to_string(),
+            mode: ActionMode::Execute,
+        };
+
+        let prepared = prepare(&action, &record).unwrap();
+
+        assert_eq!(
+            prepared.argv,
+            vec!["printf", "two words", "one arg", "single quoted", "\\"]
+        );
+    }
+
+    #[test]
+    fn missing_interpolation_field_is_an_error() {
+        let record = ServiceRecord::new("alpha", "_ssh._tcp", "local");
+        let action = CommandAction {
+            description: None,
+            command: "ssh {hostname}".to_string(),
+            mode: ActionMode::Execute,
+        };
+
+        let err = prepare(&action, &record).unwrap_err();
+
+        assert!(err.to_string().contains("service field `hostname`"));
+        assert!(err.to_string().contains("alpha"));
+    }
+
+    #[test]
+    fn malformed_templates_and_quotes_are_errors() {
+        let record = ServiceRecord::new("alpha", "_ssh._tcp", "local");
+        let unterminated_interpolation = CommandAction {
+            description: None,
+            command: "echo {name".to_string(),
+            mode: ActionMode::Execute,
+        };
+        let unterminated_quote = CommandAction {
+            description: None,
+            command: "echo 'alpha".to_string(),
+            mode: ActionMode::Execute,
+        };
+
+        assert!(
+            prepare(&unterminated_interpolation, &record)
+                .unwrap_err()
+                .to_string()
+                .contains("unterminated interpolation")
+        );
+        assert!(
+            prepare(&unterminated_quote, &record)
+                .unwrap_err()
+                .to_string()
+                .contains("unterminated `'` quote")
+        );
+    }
+
+    #[test]
+    fn empty_command_after_splitting_is_an_error() {
+        let record = ServiceRecord::new("alpha", "_ssh._tcp", "local");
+        let action = CommandAction {
+            description: None,
+            command: "   ".to_string(),
+            mode: ActionMode::Execute,
+        };
+
+        let err = prepare(&action, &record).unwrap_err();
+
+        assert!(err.to_string().contains("empty argv"));
     }
 }

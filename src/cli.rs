@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
 use clap::{Arg, ArgAction, Command, error::ErrorKind};
 use color_eyre::eyre::Result;
@@ -19,7 +19,47 @@ pub enum CliCommand {
 }
 
 pub fn parse() -> Result<Cli> {
-    let matches = Command::new("avahi-tui")
+    parse_from(std::env::args_os())
+}
+
+pub fn parse_from<I, T>(args: I) -> Result<Cli>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let matches = command().try_get_matches_from(args)?;
+
+    // `--config-dir` is repeatable and is read from whichever argument context
+    // applies: the `list-commands` subcommand carries its own copy of the flag,
+    // while a plain run reads the top-level one.
+    let (command, config_dirs) = match matches.subcommand() {
+        None => (CliCommand::Run, collect_config_dirs(&matches)),
+        Some(("list-commands", sub)) => (CliCommand::ListCommands, collect_config_dirs(sub)),
+        Some((name, _)) => {
+            return Err(clap::Error::raw(
+                ErrorKind::InvalidSubcommand,
+                format!(
+                    "unknown subcommand `{name}`; use `list-commands` to see available commands\n"
+                ),
+            )
+            .into());
+        }
+    };
+
+    Ok(Cli {
+        domain: matches
+            .get_one::<String>("domain")
+            .cloned()
+            .unwrap_or_else(|| "local".to_string()),
+        config_dirs,
+        service_type: matches.get_one::<String>("service-type").cloned(),
+        fake_discovery: matches.get_flag("fake-discovery"),
+        command,
+    })
+}
+
+fn command() -> Command {
+    Command::new("avahi-tui")
         .about("TUI browser and launcher for DNS-SD services")
         .arg(
             // A flag rather than a positional so it never competes with the
@@ -62,35 +102,6 @@ pub fn parse() -> Result<Cli> {
                         .value_name("PATH"),
                 ),
         )
-        .get_matches();
-
-    // `--config-dir` is repeatable and is read from whichever argument context
-    // applies: the `list-commands` subcommand carries its own copy of the flag,
-    // while a plain run reads the top-level one.
-    let (command, config_dirs) = match matches.subcommand() {
-        None => (CliCommand::Run, collect_config_dirs(&matches)),
-        Some(("list-commands", sub)) => (CliCommand::ListCommands, collect_config_dirs(sub)),
-        Some((name, _)) => {
-            return Err(clap::Error::raw(
-                ErrorKind::InvalidSubcommand,
-                format!(
-                    "unknown subcommand `{name}`; use `list-commands` to see available commands\n"
-                ),
-            )
-            .into());
-        }
-    };
-
-    Ok(Cli {
-        domain: matches
-            .get_one::<String>("domain")
-            .cloned()
-            .unwrap_or_else(|| "local".to_string()),
-        config_dirs,
-        service_type: matches.get_one::<String>("service-type").cloned(),
-        fake_discovery: matches.get_flag("fake-discovery"),
-        command,
-    })
 }
 
 fn collect_config_dirs(matches: &clap::ArgMatches) -> Vec<PathBuf> {
@@ -100,4 +111,77 @@ fn collect_config_dirs(matches: &clap::ArgMatches) -> Vec<PathBuf> {
         .flatten()
         .map(PathBuf::from)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_default_run_command() {
+        let cli = parse_from(["avahi-tui"]).unwrap();
+
+        assert_eq!(cli.domain, "local");
+        assert!(cli.config_dirs.is_empty());
+        assert_eq!(cli.service_type, None);
+        assert!(!cli.fake_discovery);
+        assert_eq!(cli.command, CliCommand::Run);
+    }
+
+    #[test]
+    fn parses_run_options_and_repeatable_config_dirs() {
+        let cli = parse_from([
+            "avahi-tui",
+            "--domain",
+            "corp",
+            "--service-type",
+            "_ssh._tcp",
+            "--fake-discovery",
+            "--config-dir",
+            "team",
+            "--config-dir",
+            "local",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.domain, "corp");
+        assert_eq!(
+            cli.config_dirs,
+            vec![PathBuf::from("team"), PathBuf::from("local")]
+        );
+        assert_eq!(cli.service_type, Some("_ssh._tcp".to_string()));
+        assert!(cli.fake_discovery);
+        assert_eq!(cli.command, CliCommand::Run);
+    }
+
+    #[test]
+    fn parses_list_commands_config_dirs_from_subcommand_context() {
+        let cli = parse_from([
+            "avahi-tui",
+            "--config-dir",
+            "run-only",
+            "list-commands",
+            "--config-dir",
+            "commands",
+            "--config-dir",
+            "overrides",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.command, CliCommand::ListCommands);
+        assert_eq!(
+            cli.config_dirs,
+            vec![PathBuf::from("commands"), PathBuf::from("overrides")]
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_subcommand_instead_of_treating_it_as_domain() {
+        let err = parse_from(["avahi-tui", "browse"]).unwrap_err();
+
+        assert_eq!(
+            err.downcast_ref::<clap::Error>().map(|err| err.kind()),
+            Some(ErrorKind::InvalidSubcommand)
+        );
+    }
 }
