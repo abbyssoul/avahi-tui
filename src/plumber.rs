@@ -140,7 +140,6 @@ pub struct MatcherBuilder {
     commands: Vec<CommandConfig>,
     /// command name -> (layer it was last defined in, index into `commands`)
     names: BTreeMap<String, (usize, usize)>,
-    warnings: Vec<String>,
     layer: usize,
 }
 
@@ -157,14 +156,6 @@ impl MatcherBuilder {
 
     pub fn add_str(&mut self, source_name: &str, source: &str) -> Result<()> {
         let command = parse_command_config(source_name, source)?;
-        for requirement in &command.requirements {
-            if !command_exists(requirement) {
-                self.warnings.push(format!(
-                    "command `{}` requirement `{requirement}` was not found in PATH",
-                    command.name
-                ));
-            }
-        }
         match self.names.get(&command.name).copied() {
             Some((layer, _)) if layer == self.layer => {
                 return Err(eyre!(
@@ -241,16 +232,6 @@ pub fn load_from_dirs(builder: &mut MatcherBuilder, dirs: &[PathBuf]) -> Result<
         }
     }
     Ok(())
-}
-
-fn command_exists(command: &str) -> bool {
-    if command.contains('/') {
-        return Path::new(command).is_file();
-    }
-    let Some(path) = env::var_os("PATH") else {
-        return false;
-    };
-    env::split_paths(&path).any(|dir| dir.join(command).is_file())
 }
 
 #[derive(Debug, Default)]

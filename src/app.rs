@@ -172,7 +172,7 @@ impl App {
         }
 
         self.command_groups = Vec::new();
-        let previous_selection = self
+        let previous = self
             .visible_groups
             .get(self.selected)
             .map(|group| group.id.clone());
@@ -182,16 +182,10 @@ impl App {
             .iter()
             .map(|group| self.matcher.matches_group(group).len())
             .collect();
-        if let Some(previous_selection) = previous_selection
-            && let Some(index) = self
-                .visible_groups
-                .iter()
-                .position(|group| group.id == previous_selection)
-        {
-            self.selected = index;
-            return;
+        match find_selection(&self.visible_groups, previous, |group| group.id.clone()) {
+            Some(index) => self.selected = index,
+            None => self.clamp_selection(),
         }
-        self.clamp_selection();
     }
 
     /// Build the command-grouped rows: each configured command paired with the
@@ -228,16 +222,12 @@ impl App {
         self.command_groups = command_groups;
         self.visible_groups = Vec::new();
         self.group_match_counts = Vec::new();
-        if let Some(previous) = previous
-            && let Some(index) = self
-                .command_groups
-                .iter()
-                .position(|group| group.command.name == previous)
-        {
-            self.selected = index;
-            return;
+        match find_selection(&self.command_groups, previous, |group| {
+            group.command.name.clone()
+        }) {
+            Some(index) => self.selected = index,
+            None => self.clamp_selection(),
         }
-        self.clamp_selection();
     }
 
     /// Number of rows in the currently active left-hand list.
@@ -256,6 +246,14 @@ impl App {
         } else if self.selected >= count {
             self.selected = count - 1;
         }
+    }
+
+    /// Close any open modal/picker and drop its transient state. Clearing the
+    /// already-empty action state on plain closes (search/help) is harmless.
+    fn return_to_browse(&mut self) {
+        self.mode = AppMode::Browse;
+        self.action_matches.clear();
+        self.pending_action = None;
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Result<Option<PreparedCommand>> {
@@ -283,7 +281,7 @@ impl App {
             AppMode::ServicePicker => self.handle_service_picker_key(key),
             AppMode::Help => {
                 if self.keybindings.is("help", "close", key) {
-                    self.mode = AppMode::Browse;
+                    self.return_to_browse();
                 }
                 Ok(None)
             }
@@ -328,7 +326,7 @@ impl App {
 
     fn handle_search_key(&mut self, key: KeyEvent) {
         match key.code {
-            _ if self.keybindings.is("search", "close", key) => self.mode = AppMode::Browse,
+            _ if self.keybindings.is("search", "close", key) => self.return_to_browse(),
             KeyCode::Backspace => {
                 self.filter.text_query.pop();
                 self.recompute_visible();
@@ -350,14 +348,12 @@ impl App {
     fn handle_type_filter_key(&mut self, key: KeyEvent) {
         let types = self.service_types();
         match key.code {
-            _ if self.keybindings.is("type_filter", "close", key) => self.mode = AppMode::Browse,
+            _ if self.keybindings.is("type_filter", "close", key) => self.return_to_browse(),
             _ if self.keybindings.is("type_filter", "down", key) => {
-                if !types.is_empty() {
-                    self.type_filter_index = (self.type_filter_index + 1).min(types.len() - 1);
-                }
+                self.type_filter_index = move_index(self.type_filter_index, types.len(), 1);
             }
             _ if self.keybindings.is("type_filter", "up", key) => {
-                self.type_filter_index = self.type_filter_index.saturating_sub(1);
+                self.type_filter_index = move_index(self.type_filter_index, types.len(), -1);
             }
             _ if self.keybindings.is("type_filter", "toggle", key) => {
                 if let Some(service_type) = types.get(self.type_filter_index) {
@@ -371,16 +367,16 @@ impl App {
 
     fn handle_grouping_key(&mut self, key: KeyEvent) {
         match key.code {
-            _ if self.keybindings.is("grouping", "close", key) => self.mode = AppMode::Browse,
+            _ if self.keybindings.is("grouping", "close", key) => self.return_to_browse(),
             _ if self.keybindings.is("grouping", "down", key) => {
-                self.grouping_index = (self.grouping_index + 1).min(GroupingMode::ALL.len() - 1);
+                self.grouping_index = move_index(self.grouping_index, GroupingMode::ALL.len(), 1);
             }
             _ if self.keybindings.is("grouping", "up", key) => {
-                self.grouping_index = self.grouping_index.saturating_sub(1);
+                self.grouping_index = move_index(self.grouping_index, GroupingMode::ALL.len(), -1);
             }
             _ if self.keybindings.is("grouping", "select", key) => {
                 self.filter.grouping = GroupingMode::ALL[self.grouping_index];
-                self.mode = AppMode::Browse;
+                self.return_to_browse();
                 self.recompute_visible();
             }
             _ => {}
@@ -388,18 +384,14 @@ impl App {
     }
 
     fn handle_action_picker_key(&mut self, key: KeyEvent) -> Result<Option<PreparedCommand>> {
+        let len = self.action_matches.len();
         match key.code {
-            _ if self.keybindings.is("picker", "close", key) => {
-                self.mode = AppMode::Browse;
-                self.action_matches.clear();
-            }
+            _ if self.keybindings.is("picker", "close", key) => self.return_to_browse(),
             _ if self.keybindings.is("picker", "down", key) => {
-                if !self.action_matches.is_empty() {
-                    self.action_index = (self.action_index + 1).min(self.action_matches.len() - 1);
-                }
+                self.action_index = move_index(self.action_index, len, 1);
             }
             _ if self.keybindings.is("picker", "up", key) => {
-                self.action_index = self.action_index.saturating_sub(1);
+                self.action_index = move_index(self.action_index, len, -1);
             }
             _ if self.keybindings.is("picker", "select", key) => {
                 if let Some(action) = self.action_matches.get(self.action_index).cloned() {
@@ -418,25 +410,20 @@ impl App {
             .map(|action| action.matching_records.len())
             .unwrap_or(0);
         match key.code {
-            _ if self.keybindings.is("picker", "close", key) => {
-                self.mode = AppMode::Browse;
-                self.pending_action = None;
-            }
+            _ if self.keybindings.is("picker", "close", key) => self.return_to_browse(),
             _ if self.keybindings.is("picker", "down", key) => {
-                if count > 0 {
-                    self.instance_index = (self.instance_index + 1).min(count - 1);
-                }
+                self.instance_index = move_index(self.instance_index, count, 1);
             }
             _ if self.keybindings.is("picker", "up", key) => {
-                self.instance_index = self.instance_index.saturating_sub(1);
+                self.instance_index = move_index(self.instance_index, count, -1);
             }
             _ if self.keybindings.is("picker", "select", key) => {
                 let Some(action) = self.pending_action.clone() else {
-                    self.mode = AppMode::Browse;
+                    self.return_to_browse();
                     return Ok(None);
                 };
                 let Some(record) = action.matching_records.get(self.instance_index) else {
-                    self.mode = AppMode::Browse;
+                    self.return_to_browse();
                     return Ok(None);
                 };
                 return self.execute_action(&action, record);
@@ -447,13 +434,7 @@ impl App {
     }
 
     fn move_selection(&mut self, delta: isize) {
-        let count = self.active_count();
-        if count == 0 {
-            self.selected = 0;
-            return;
-        }
-        let selected = self.selected as isize + delta;
-        self.selected = selected.clamp(0, count as isize - 1) as usize;
+        self.selected = move_index(self.selected, self.active_count(), delta);
         // A different row is now in focus — start its details from the top.
         self.details_scroll = 0;
     }
@@ -527,11 +508,8 @@ impl App {
             .into_iter()
             .find(|result| result.command.name == command.name)
         else {
-            self.status = format!(
-                "`{}` no longer matches `{}`",
-                command.name, service.label
-            );
-            self.mode = AppMode::Browse;
+            self.status = format!("`{}` no longer matches `{}`", command.name, service.label);
+            self.return_to_browse();
             return Ok(None);
         };
         self.choose_action(result)
@@ -544,24 +522,20 @@ impl App {
             .map(|group| group.services.len())
             .unwrap_or(0);
         match key.code {
-            _ if self.keybindings.is("picker", "close", key) => {
-                self.mode = AppMode::Browse;
-            }
+            _ if self.keybindings.is("picker", "close", key) => self.return_to_browse(),
             _ if self.keybindings.is("picker", "down", key) => {
-                if count > 0 {
-                    self.service_picker_index = (self.service_picker_index + 1).min(count - 1);
-                }
+                self.service_picker_index = move_index(self.service_picker_index, count, 1);
             }
             _ if self.keybindings.is("picker", "up", key) => {
-                self.service_picker_index = self.service_picker_index.saturating_sub(1);
+                self.service_picker_index = move_index(self.service_picker_index, count, -1);
             }
             _ if self.keybindings.is("picker", "select", key) => {
                 let Some(group) = self.command_groups.get(self.selected) else {
-                    self.mode = AppMode::Browse;
+                    self.return_to_browse();
                     return Ok(None);
                 };
                 let Some(service) = group.services.get(self.service_picker_index).cloned() else {
-                    self.mode = AppMode::Browse;
+                    self.return_to_browse();
                     return Ok(None);
                 };
                 let command = group.command.clone();
@@ -582,7 +556,7 @@ impl App {
 
         let Some(record) = action.matching_records.first() else {
             self.status = "selected action has no matching services".to_string();
-            self.mode = AppMode::Browse;
+            self.return_to_browse();
             return Ok(None);
         };
         self.execute_action(&action, record)
@@ -598,9 +572,7 @@ impl App {
             ActionMode::Fork => {
                 process::fork(&prepared)?;
                 self.status = format!("launched `{}`", action.command.name);
-                self.mode = AppMode::Browse;
-                self.action_matches.clear();
-                self.pending_action = None;
+                self.return_to_browse();
                 Ok(None)
             }
             ActionMode::Execute => Ok(Some(prepared)),
@@ -635,6 +607,25 @@ impl App {
     pub fn service_types(&self) -> Vec<String> {
         FilterState::discovered_types(&self.records.values().cloned().collect::<Vec<_>>())
     }
+}
+
+/// Move a list cursor by `delta`, clamped to `[0, len-1]` (or 0 when empty).
+fn move_index(index: usize, len: usize, delta: isize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    (index as isize + delta).clamp(0, len as isize - 1) as usize
+}
+
+/// Index of the item whose key equals `previous` — used to keep the cursor on
+/// the same logical row when a list is rebuilt.
+fn find_selection<T, K: PartialEq>(
+    items: &[T],
+    previous: Option<K>,
+    key: impl Fn(&T) -> K,
+) -> Option<usize> {
+    let previous = previous?;
+    items.iter().position(|item| key(item) == previous)
 }
 
 #[cfg(test)]

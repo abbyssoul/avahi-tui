@@ -110,19 +110,14 @@ fn render_top_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     ];
 
     // right-aligned domain chip
-    let left_text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-    let right = format!("  {}  ", app.cli.domain);
-    let pad = (area.width as usize)
-        .saturating_sub(left_text.chars().count())
-        .saturating_sub(right.chars().count());
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(
-        right,
+    let domain = Span::styled(
+        format!("  {}  ", app.cli.domain),
         Style::default()
             .fg(BG_BAR)
             .bg(ACCENT)
             .add_modifier(Modifier::BOLD),
-    ));
+    );
+    push_right_aligned(&mut spans, vec![domain], area.width);
 
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(BG_BAR)),
@@ -177,13 +172,7 @@ fn render_filter_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     chips.push(Span::raw(" "));
     chips.push(chip(&format!(" group:{} ", app.filter.grouping), ACCENT));
 
-    let left_text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-    let right_text: String = chips.iter().map(|s| s.content.as_ref()).collect();
-    let pad = (area.width as usize)
-        .saturating_sub(left_text.chars().count())
-        .saturating_sub(right_text.chars().count());
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.extend(chips);
+    push_right_aligned(&mut spans, chips, area.width);
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -201,73 +190,32 @@ fn chip(text: &str, color: Color) -> Span<'static> {
 // ── service list ─────────────────────────────────────────────────────────
 fn render_services(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let total = app.visible_groups.len();
-    let inner_h = area.height.saturating_sub(2) as usize;
 
-    let title = if total == 0 {
-        Line::from(vec![Span::styled(
-            " services ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )])
-    } else {
-        let first = scroll_offset(app.selected, total, inner_h) + 1;
-        let last = (first + inner_h - 1).min(total);
-        Line::from(vec![
-            Span::styled(
-                " services ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{first}-{last}/{total} "),
+    let spinner = SPINNER[(app.ticks / 2) as usize % SPINNER.len()];
+    let empty = if app.filter.is_active() {
+        vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  no services match the active filters",
+                Style::default().fg(WARN),
+            )),
+            Line::from(Span::styled(
+                "  press esc to clear search, t to adjust types",
                 Style::default().fg(FG_DIM),
-            ),
-        ])
+            )),
+        ]
+    } else {
+        vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(
+                    "  {spinner} listening for mDNS services on {}…",
+                    app.cli.domain
+                ),
+                Style::default().fg(FG_DIM),
+            )),
+        ]
     };
-
-    let block = panel().title(title);
-
-    if total == 0 {
-        let spinner = SPINNER[(app.ticks / 2) as usize % SPINNER.len()];
-        let msg = if app.filter.is_active() {
-            vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    "  no services match the active filters",
-                    Style::default().fg(WARN),
-                )),
-                Line::from(Span::styled(
-                    "  press esc to clear search, t to adjust types",
-                    Style::default().fg(FG_DIM),
-                )),
-            ]
-        } else {
-            vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    format!(
-                        "  {spinner} listening for mDNS services on {}…",
-                        app.cli.domain
-                    ),
-                    Style::default().fg(FG_DIM),
-                )),
-            ]
-        };
-        frame.render_widget(Paragraph::new(msg).block(block), area);
-        return;
-    }
-
-    let offset = scroll_offset(app.selected, total, inner_h);
-    let rows: Vec<Row> = app
-        .visible_groups
-        .iter()
-        .enumerate()
-        .skip(offset)
-        .take(inner_h)
-        .map(|(index, group)| {
-            let selected = index == app.selected;
-            let matches = app.group_match_counts.get(index).copied().unwrap_or(0);
-            service_row(group, selected, matches)
-        })
-        .collect();
 
     // Column layout — Table handles per-cell truncation and alignment so that
     // wide/unicode service names no longer shift the trailing columns.
@@ -280,26 +228,28 @@ fn render_services(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Constraint::Fill(4),    // host
     ];
 
-    frame.render_widget(
-        Table::new(rows, widths).column_spacing(1).block(block),
+    render_list_panel(
+        frame,
         area,
+        " services ",
+        app.selected,
+        total,
+        &widths,
+        empty,
+        |index| {
+            service_row(
+                &app.visible_groups[index],
+                index == app.selected,
+                app.group_match_counts.get(index).copied().unwrap_or(0),
+            )
+        },
     );
-    render_scrollbar(frame, area, total, inner_h, offset);
 }
 
 fn service_row(group: &ServiceGroup, selected: bool, matches: usize) -> Row<'static> {
     let color = category_color(&group.service_type);
-    let base = if selected {
-        Style::default().bg(BG_SEL)
-    } else {
-        Style::default()
-    };
-
-    let gutter = if selected {
-        Span::styled("▌", Style::default().fg(ACCENT).bg(BG_SEL))
-    } else {
-        Span::styled(" ", base)
-    };
+    let base = selection_style(selected);
+    let gutter = gutter_span(selected);
 
     let name_style = if selected {
         base.fg(Color::White).add_modifier(Modifier::BOLD)
@@ -447,23 +397,7 @@ fn render_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]));
     }
 
-    // Clamp the requested scroll to what the content actually needs, then slice
-    // out the visible window. `details_max_scroll` is written back so the key
-    // handler can clamp the next scroll request against the real content height.
-    let total = rows.len();
-    let inner_h = area.height.saturating_sub(2) as usize;
-    let max_scroll = total.saturating_sub(inner_h);
-    app.details_max_scroll.set(max_scroll);
-    app.details_viewport.set(inner_h);
-    let offset = app.details_scroll.min(max_scroll);
-    let visible: Vec<Row> = rows.into_iter().skip(offset).take(inner_h).collect();
-
-    let widths = [Constraint::Length(8), Constraint::Fill(1)];
-    frame.render_widget(
-        Table::new(visible, widths).column_spacing(1).block(block),
-        area,
-    );
-    render_scrollbar(frame, area, total, inner_h, offset);
+    render_detail_rows(frame, app, area, block, rows);
 }
 
 fn field_row(label: &str, value: &str, value_color: Color) -> Row<'static> {
@@ -524,82 +458,36 @@ fn action_row(action: &MatchResult) -> Row<'static> {
 // ── command list (group-by-command view) ──────────────────────────────────
 fn render_commands(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let total = app.command_groups.len();
-    let inner_h = area.height.saturating_sub(2) as usize;
-
-    let title = if total == 0 {
-        Line::from(vec![Span::styled(
-            " commands ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )])
-    } else {
-        let first = scroll_offset(app.selected, total, inner_h) + 1;
-        let last = (first + inner_h - 1).min(total);
-        Line::from(vec![
-            Span::styled(
-                " commands ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{first}-{last}/{total} "),
-                Style::default().fg(FG_DIM),
-            ),
-        ])
-    };
-
-    let block = panel().title(title);
-
-    if total == 0 {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    "  no commands configured",
-                    Style::default().fg(FG_DIM),
-                )),
-            ])
-            .block(block),
-            area,
-        );
-        return;
-    }
-
-    let offset = scroll_offset(app.selected, total, inner_h);
-    let rows: Vec<Row> = app
-        .command_groups
-        .iter()
-        .enumerate()
-        .skip(offset)
-        .take(inner_h)
-        .map(|(index, group)| command_row(group, index == app.selected))
-        .collect();
-
+    let empty = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  no commands configured",
+            Style::default().fg(FG_DIM),
+        )),
+    ];
     let widths = [
         Constraint::Length(2),  // selection gutter + dot
         Constraint::Fill(5),    // command name
         Constraint::Length(11), // matching-services badge
         Constraint::Fill(6),    // description
     ];
-    frame.render_widget(
-        Table::new(rows, widths).column_spacing(1).block(block),
+    render_list_panel(
+        frame,
         area,
+        " commands ",
+        app.selected,
+        total,
+        &widths,
+        empty,
+        |index| command_row(&app.command_groups[index], index == app.selected),
     );
-    render_scrollbar(frame, area, total, inner_h, offset);
 }
 
 fn command_row(group: &CommandGroup, selected: bool) -> Row<'static> {
-    let base = if selected {
-        Style::default().bg(BG_SEL)
-    } else {
-        Style::default()
-    };
+    let base = selection_style(selected);
     let count = group.services.len();
     let active = count > 0;
-
-    let gutter = if selected {
-        Span::styled("▌", Style::default().fg(ACCENT).bg(BG_SEL))
-    } else {
-        Span::styled(" ", base)
-    };
+    let gutter = gutter_span(selected);
 
     let name_style = if active {
         base.fg(Color::White).add_modifier(Modifier::BOLD)
@@ -714,20 +602,7 @@ fn render_command_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]));
     }
 
-    let total = rows.len();
-    let inner_h = area.height.saturating_sub(2) as usize;
-    let max_scroll = total.saturating_sub(inner_h);
-    app.details_max_scroll.set(max_scroll);
-    app.details_viewport.set(inner_h);
-    let offset = app.details_scroll.min(max_scroll);
-    let visible: Vec<Row> = rows.into_iter().skip(offset).take(inner_h).collect();
-
-    let widths = [Constraint::Length(8), Constraint::Fill(1)];
-    frame.render_widget(
-        Table::new(visible, widths).column_spacing(1).block(block),
-        area,
-    );
-    render_scrollbar(frame, area, total, inner_h, offset);
+    render_detail_rows(frame, app, area, block, rows);
 }
 
 // ── footer ───────────────────────────────────────────────────────────────
@@ -769,13 +644,8 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 
     // right-aligned status message
-    let status = format!("  {} ", app.status);
-    let left_text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-    let pad = (area.width as usize)
-        .saturating_sub(left_text.chars().count())
-        .saturating_sub(status.chars().count());
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(status, Style::default().fg(ACCENT_DIM)));
+    let status = Span::styled(format!("  {} ", app.status), Style::default().fg(ACCENT_DIM));
+    push_right_aligned(&mut spans, vec![status], area.width);
 
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(BG_BAR)),
@@ -792,17 +662,11 @@ fn render_type_filter(frame: &mut Frame<'_>, app: &App) {
             Style::default().fg(FG_DIM),
         )))]
     } else {
-        service_types
-            .iter()
-            .enumerate()
-            .map(|(index, service_type)| {
+        build_list_items(
+            &service_types,
+            app.type_filter_index,
+            |service_type, selected, base| {
                 let enabled = app.filter.enabled_service_types.contains(service_type);
-                let selected = index == app.type_filter_index;
-                let base = if selected {
-                    Style::default().bg(BG_SEL)
-                } else {
-                    Style::default()
-                };
                 let check = if enabled {
                     Span::styled(" ✓ ", base.fg(GOOD).add_modifier(Modifier::BOLD))
                 } else {
@@ -814,10 +678,8 @@ fn render_type_filter(frame: &mut Frame<'_>, app: &App) {
                     Span::styled(" ● ", base.fg(category_color(service_type))),
                     Span::styled(service_type.clone(), base.fg(Color::White)),
                 ])
-                .style(base)
-                .into()
-            })
-            .collect()
+            },
+        )
     };
     render_popup(
         frame,
@@ -830,34 +692,22 @@ fn render_type_filter(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn render_grouping(frame: &mut Frame<'_>, app: &App) {
-    let items: Vec<ListItem> = GroupingMode::ALL
-        .iter()
-        .enumerate()
-        .map(|(index, mode)| {
-            let selected = index == app.grouping_index;
-            let active = *mode == app.filter.grouping;
-            let base = if selected {
-                Style::default().bg(BG_SEL)
-            } else {
-                Style::default()
-            };
-            let marker = if active {
-                Span::styled(" ● ", base.fg(GOOD))
-            } else {
-                Span::styled(" ○ ", base.fg(FG_DIM))
-            };
-            Line::from(vec![
-                gutter_span(selected),
-                marker,
-                Span::styled(
-                    mode.to_string(),
-                    base.fg(Color::White).add_modifier(Modifier::BOLD),
-                ),
-            ])
-            .style(base)
-            .into()
-        })
-        .collect();
+    let items = build_list_items(&GroupingMode::ALL, app.grouping_index, |mode, selected, base| {
+        let active = *mode == app.filter.grouping;
+        let marker = if active {
+            Span::styled(" ● ", base.fg(GOOD))
+        } else {
+            Span::styled(" ○ ", base.fg(FG_DIM))
+        };
+        Line::from(vec![
+            gutter_span(selected),
+            marker,
+            Span::styled(
+                mode.to_string(),
+                base.fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+        ])
+    });
     render_popup(
         frame,
         " group by ",
@@ -869,40 +719,29 @@ fn render_grouping(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn render_action_picker(frame: &mut Frame<'_>, app: &App) {
-    let items: Vec<ListItem> = app
-        .action_matches
-        .iter()
-        .enumerate()
-        .map(|(index, action)| {
-            let selected = index == app.action_index;
-            let base = if selected {
-                Style::default().bg(BG_SEL)
-            } else {
-                Style::default()
-            };
-            let needs = action.needs_instance && action.matching_records.len() > 1;
-            let description = action
-                .command
-                .action
-                .description
-                .as_deref()
-                .or(action.command.description.as_deref())
-                .unwrap_or("");
-            let mut spans = vec![
-                gutter_span(selected),
-                Span::styled("★ ", base.fg(STAR)),
-                Span::styled(
-                    action.command.name.clone(),
-                    base.fg(GOOD).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!(" — {description}"), base.fg(Color::White)),
-            ];
-            if needs {
-                spans.push(Span::styled("  ⊙ choose instance", base.fg(WARN)));
-            }
-            Line::from(spans).style(base).into()
-        })
-        .collect();
+    let items = build_list_items(&app.action_matches, app.action_index, |action, selected, base| {
+        let needs = action.needs_instance && action.matching_records.len() > 1;
+        let description = action
+            .command
+            .action
+            .description
+            .as_deref()
+            .or(action.command.description.as_deref())
+            .unwrap_or("");
+        let mut spans = vec![
+            gutter_span(selected),
+            Span::styled("★ ", base.fg(STAR)),
+            Span::styled(
+                action.command.name.clone(),
+                base.fg(GOOD).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" — {description}"), base.fg(Color::White)),
+        ];
+        if needs {
+            spans.push(Span::styled("  ⊙ choose instance", base.fg(WARN)));
+        }
+        Line::from(spans)
+    });
     render_popup(
         frame,
         " matching actions ",
@@ -914,32 +753,18 @@ fn render_action_picker(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn render_instance_picker(frame: &mut Frame<'_>, app: &App) {
-    let items: Vec<ListItem> = app
+    let records = app
         .pending_action
         .as_ref()
-        .map(|action| {
-            action
-                .matching_records
-                .iter()
-                .enumerate()
-                .map(|(index, record)| {
-                    let selected = index == app.instance_index;
-                    let base = if selected {
-                        Style::default().bg(BG_SEL)
-                    } else {
-                        Style::default()
-                    };
-                    Line::from(vec![
-                        gutter_span(selected),
-                        Span::styled("● ", base.fg(category_color(&record.service_type))),
-                        Span::styled(instance_endpoint(record), base.fg(Color::White)),
-                    ])
-                    .style(base)
-                    .into()
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+        .map(|action| action.matching_records.as_slice())
+        .unwrap_or(&[]);
+    let items = build_list_items(records, app.instance_index, |record, selected, base| {
+        Line::from(vec![
+            gutter_span(selected),
+            Span::styled("● ", base.fg(category_color(&record.service_type))),
+            Span::styled(instance_endpoint(record), base.fg(Color::White)),
+        ])
+    });
     render_popup(
         frame,
         " select instance ",
@@ -951,35 +776,18 @@ fn render_instance_picker(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn render_service_picker(frame: &mut Frame<'_>, app: &App) {
-    let (command_name, items): (String, Vec<ListItem>) = app
-        .command_groups
-        .get(app.selected)
-        .map(|group| {
-            let items = group
-                .services
-                .iter()
-                .enumerate()
-                .map(|(index, service)| {
-                    let selected = index == app.service_picker_index;
-                    let base = if selected {
-                        Style::default().bg(BG_SEL)
-                    } else {
-                        Style::default()
-                    };
-                    let host = service.hostname.as_deref().unwrap_or("…resolving");
-                    Line::from(vec![
-                        gutter_span(selected),
-                        Span::styled("● ", base.fg(category_color(&service.service_type))),
-                        Span::styled(service.label.clone(), base.fg(Color::White)),
-                        Span::styled(format!("  {host}"), base.fg(FG_DIM)),
-                    ])
-                    .style(base)
-                    .into()
-                })
-                .collect();
-            (group.command.name.clone(), items)
-        })
-        .unwrap_or_else(|| (String::new(), Vec::new()));
+    let group = app.command_groups.get(app.selected);
+    let command_name = group.map(|g| g.command.name.clone()).unwrap_or_default();
+    let services = group.map(|g| g.services.as_slice()).unwrap_or(&[]);
+    let items = build_list_items(services, app.service_picker_index, |service, selected, base| {
+        let host = service.hostname.as_deref().unwrap_or("…resolving");
+        Line::from(vec![
+            gutter_span(selected),
+            Span::styled("● ", base.fg(category_color(&service.service_type))),
+            Span::styled(service.label.clone(), base.fg(Color::White)),
+            Span::styled(format!("  {host}"), base.fg(FG_DIM)),
+        ])
+    });
 
     render_popup(
         frame,
@@ -1195,4 +1003,116 @@ fn scroll_offset(selected: usize, total: usize, view_h: usize) -> usize {
     } else {
         (selected + 1 - view_h).min(total - view_h)
     }
+}
+
+/// Background highlight for the currently selected row/item.
+fn selection_style(selected: bool) -> Style {
+    if selected {
+        Style::default().bg(BG_SEL)
+    } else {
+        Style::default()
+    }
+}
+
+/// Append `right` to `spans` so it sits flush against the right edge of a
+/// `width`-wide bar, padding the gap with spaces. Used by the top/filter/footer
+/// status bars.
+fn push_right_aligned<'a>(spans: &mut Vec<Span<'a>>, right: Vec<Span<'a>>, width: u16) {
+    let len = |list: &[Span]| -> usize { list.iter().map(|s| s.content.chars().count()).sum() };
+    let pad = (width as usize)
+        .saturating_sub(len(spans))
+        .saturating_sub(len(&right));
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.extend(right);
+}
+
+/// Panel title with the `label` plus a `first-last/total` range chip when the
+/// list is non-empty. Shared by the service and command list panels.
+fn list_title(label: &str, total: usize, selected: usize, inner_h: usize) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        label.to_string(),
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    )];
+    if total > 0 {
+        let first = scroll_offset(selected, total, inner_h) + 1;
+        let last = (first + inner_h - 1).min(total);
+        spans.push(Span::styled(
+            format!("{first}-{last}/{total} "),
+            Style::default().fg(FG_DIM),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Render a scrollable left-hand list panel: title, empty-state, the visible row
+/// window, and a scrollbar. `row_at` builds the row for a given index.
+fn render_list_panel(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    selected: usize,
+    total: usize,
+    widths: &[Constraint],
+    empty: Vec<Line<'static>>,
+    mut row_at: impl FnMut(usize) -> Row<'static>,
+) {
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let block = panel().title(list_title(label, total, selected, inner_h));
+    if total == 0 {
+        frame.render_widget(Paragraph::new(empty).block(block), area);
+        return;
+    }
+    let offset = scroll_offset(selected, total, inner_h);
+    let rows: Vec<Row> = (offset..total).take(inner_h).map(&mut row_at).collect();
+    frame.render_widget(
+        Table::new(rows, widths.iter().copied())
+            .column_spacing(1)
+            .block(block),
+        area,
+    );
+    render_scrollbar(frame, area, total, inner_h, offset);
+}
+
+/// Render the shared tail of the two detail panes: clamp the requested scroll to
+/// the content height (writing the bounds back for the key handler), slice the
+/// visible window, and draw the table + scrollbar.
+fn render_detail_rows<'a>(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    block: Block<'a>,
+    rows: Vec<Row<'a>>,
+) {
+    let total = rows.len();
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let max_scroll = total.saturating_sub(inner_h);
+    app.details_max_scroll.set(max_scroll);
+    app.details_viewport.set(inner_h);
+    let offset = app.details_scroll.min(max_scroll);
+    let visible: Vec<Row> = rows.into_iter().skip(offset).take(inner_h).collect();
+
+    let widths = [Constraint::Length(8), Constraint::Fill(1)];
+    frame.render_widget(
+        Table::new(visible, widths).column_spacing(1).block(block),
+        area,
+    );
+    render_scrollbar(frame, area, total, inner_h, offset);
+}
+
+/// Build modal list items: compute the per-item `selected`/`base` style, let
+/// `line` produce the row content, and apply the selection background.
+fn build_list_items<T>(
+    items: &[T],
+    selected_index: usize,
+    mut line: impl FnMut(&T, bool, Style) -> Line<'static>,
+) -> Vec<ListItem<'static>> {
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let selected = index == selected_index;
+            let base = selection_style(selected);
+            ListItem::new(line(item, selected, base).style(base))
+        })
+        .collect()
 }
