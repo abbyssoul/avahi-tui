@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use color_eyre::eyre::{Result, eyre};
@@ -26,13 +27,13 @@ pub fn prepare(action: &CommandAction, record: &ServiceRecord) -> Result<Prepare
 }
 
 pub fn fork(command: &PreparedCommand) -> Result<()> {
-    let mut child = Command::new(&command.argv[0]);
-    child.args(&command.argv[1..]);
-    child
+    Command::new(&command.argv[0])
+        .args(&command.argv[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()?;
+        .spawn()
+        .map_err(|err| spawn_error(&command.argv[0], err))?;
     Ok(())
 }
 
@@ -41,23 +42,97 @@ pub fn exec(command: PreparedCommand) -> Result<()> {
     {
         use std::os::unix::process::CommandExt;
 
-        let mut process = Command::new(&command.argv[0]);
-        process.args(&command.argv[1..]);
-        let err = process.exec();
-        Err(err.into())
+        // `exec` only returns when the hand-off fails; on success the current
+        // process image is replaced and control never comes back.
+        let err = Command::new(&command.argv[0])
+            .args(&command.argv[1..])
+            .exec();
+        Err(spawn_error(&command.argv[0], err))
     }
 
     #[cfg(not(unix))]
     {
         let status = Command::new(&command.argv[0])
             .args(&command.argv[1..])
-            .status()?;
+            .status()
+            .map_err(|err| spawn_error(&command.argv[0], err))?;
         if status.success() {
             Ok(())
         } else {
             Err(eyre!("process exited with status {status}"))
         }
     }
+}
+
+/// Turn a spawn/exec failure into a user-facing message, special-casing the
+/// common "binary not on PATH" case so the report is actionable rather than a
+/// bare OS error code.
+fn spawn_error(program: &str, err: std::io::Error) -> color_eyre::eyre::Report {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        eyre!("command `{program}` not found")
+    } else {
+        eyre!("could not start `{program}`: {err}")
+    }
+}
+
+/// A declared dependency of a command, parsed from a `requirements` entry such
+/// as `"xdg-open"` or `"browser, optional"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Requirement {
+    pub command: String,
+    pub optional: bool,
+}
+
+/// Parse a single `requirements` entry. The optional `, optional` suffix marks a
+/// dependency whose absence should not block the action.
+pub fn parse_requirement(raw: &str) -> Requirement {
+    let mut parts = raw.splitn(2, ',');
+    let command = parts.next().unwrap_or("").trim().to_string();
+    let optional = parts
+        .next()
+        .is_some_and(|rest| rest.trim().eq_ignore_ascii_case("optional"));
+    Requirement { command, optional }
+}
+
+/// Name of the first mandatory requirement that cannot be resolved on `PATH`,
+/// if any. Optional and blank requirements are ignored.
+pub fn missing_requirement(requirements: &[String]) -> Option<String> {
+    requirements
+        .iter()
+        .map(|raw| parse_requirement(raw))
+        .filter(|req| !req.optional && !req.command.is_empty())
+        .find(|req| locate(&req.command).is_none())
+        .map(|req| req.command)
+}
+
+/// Resolve `program` the way the OS would when spawning it: an explicit path
+/// (containing a separator) is checked directly, otherwise each `PATH` entry is
+/// tried. Returns the resolved path when it names an executable file.
+pub fn locate(program: &str) -> Option<PathBuf> {
+    if program.is_empty() {
+        return None;
+    }
+    if program.contains('/') {
+        let path = PathBuf::from(program);
+        return is_executable(&path).then_some(path);
+    }
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(program))
+        .find(|candidate| is_executable(candidate))
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }
 
 fn interpolate(template: &str, record: &ServiceRecord) -> Result<String> {
@@ -263,7 +338,11 @@ mod tests {
             mode: ActionMode::Fork,
         };
 
-        assert!(fork(&command).is_err());
+        let err = fork(&command).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("command `avahi-tui-no-such-binary-xyz` not found")
+        );
     }
 
     #[test]
@@ -308,5 +387,53 @@ mod tests {
         let err = prepare(&action, &record).unwrap_err();
 
         assert!(err.to_string().contains("empty argv"));
+    }
+
+    #[test]
+    fn parse_requirement_detects_the_optional_marker() {
+        assert_eq!(
+            parse_requirement("xdg-open"),
+            Requirement {
+                command: "xdg-open".to_string(),
+                optional: false,
+            }
+        );
+        assert_eq!(
+            parse_requirement("  browser ,  Optional "),
+            Requirement {
+                command: "browser".to_string(),
+                optional: true,
+            }
+        );
+        // A trailing word other than `optional` is not treated as the marker.
+        assert!(!parse_requirement("foo, please").optional);
+    }
+
+    #[test]
+    fn locate_resolves_absolute_paths_and_path_lookups() {
+        // The running test binary is an executable file at a known absolute path.
+        let exe = std::env::current_exe().unwrap();
+        assert!(locate(exe.to_str().unwrap()).is_some());
+
+        // `sh` is present on every supported (unix) platform.
+        assert!(locate("sh").is_some());
+
+        assert!(locate("avahi-tui-no-such-binary-xyz").is_none());
+        assert!(locate("/no/such/absolute/path/xyz").is_none());
+        assert!(locate("").is_none());
+    }
+
+    #[test]
+    fn missing_requirement_skips_optional_and_present_commands() {
+        assert_eq!(missing_requirement(&[]), None);
+        assert_eq!(missing_requirement(&["sh".to_string()]), None);
+        assert_eq!(
+            missing_requirement(&["definitely-absent-xyz, optional".to_string()]),
+            None
+        );
+        assert_eq!(
+            missing_requirement(&["sh".to_string(), "definitely-absent-xyz".to_string()]),
+            Some("definitely-absent-xyz".to_string())
+        );
     }
 }

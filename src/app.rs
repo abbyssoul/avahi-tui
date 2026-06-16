@@ -567,16 +567,41 @@ impl App {
         action: &MatchResult,
         record: &ServiceRecord,
     ) -> Result<Option<PreparedCommand>> {
-        let prepared = process::prepare(&action.command.action, record)?;
+        let name = &action.command.name;
+
+        if let Some(missing) = process::missing_requirement(&action.command.requirements) {
+            return self.fail(format!(
+                "`{name}` needs `{missing}`, which is not installed"
+            ));
+        }
+
+        let prepared = match process::prepare(&action.command.action, record) {
+            Ok(prepared) => prepared,
+            Err(err) => return self.fail(format!("cannot run `{name}`: {err}")),
+        };
+
         match prepared.mode {
-            ActionMode::Fork => {
-                process::fork(&prepared)?;
-                self.status = format!("launched `{}`", action.command.name);
-                self.return_to_browse();
-                Ok(None)
-            }
+            ActionMode::Fork => match process::fork(&prepared) {
+                Ok(()) => {
+                    self.status = format!("launched `{name}`");
+                    self.return_to_browse();
+                    Ok(None)
+                }
+                Err(err) => self.fail(format!("cannot run `{name}`: {err}")),
+            },
+            // The execute hand-off happens after the TUI is torn down, so the
+            // caller takes ownership of the prepared command from here.
             ActionMode::Execute => Ok(Some(prepared)),
         }
+    }
+
+    /// Surface a user-facing failure on the status line and return to browsing.
+    /// Action failures are expected (bad config, missing tools) and must never
+    /// propagate out of the event loop and tear down the terminal.
+    fn fail(&mut self, message: String) -> Result<Option<PreparedCommand>> {
+        self.status = message;
+        self.return_to_browse();
+        Ok(None)
     }
 
     fn toggle_same_host_filter(&mut self) {
@@ -1097,5 +1122,123 @@ mode = "execute"
         assert_eq!(move_index(0, 3, -1), 0);
         assert_eq!(move_index(2, 3, 1), 2);
         assert_eq!(move_index(1, 3, 1), 2);
+    }
+
+    // ── command-execution error handling ───────────────────────────────────
+    const NEEDS_TOOL: &str = r#"
+[metadata]
+name = "needs-tool"
+requirements = ["avahi-tui-absent-tool-xyz"]
+[match.service_type]
+equals = "_ssh._tcp"
+[action]
+command = "echo hi"
+mode = "execute"
+"#;
+
+    const BAD_TEMPLATE: &str = r#"
+[metadata]
+name = "bad-template"
+[match.service_type]
+equals = "_ssh._tcp"
+[action]
+command = "echo {nonexistent_field}"
+mode = "execute"
+"#;
+
+    const FORK_MISSING_BINARY: &str = r#"
+[metadata]
+name = "ghost"
+[match.service_type]
+equals = "_ssh._tcp"
+[action]
+command = "avahi-tui-absent-binary-xyz --flag"
+mode = "fork"
+"#;
+
+    const OPTIONAL_REQ: &str = r#"
+[metadata]
+name = "with-optional"
+requirements = ["avahi-tui-absent-tool-xyz, optional"]
+[match.service_type]
+equals = "_ssh._tcp"
+[action]
+command = "echo hi"
+mode = "execute"
+"#;
+
+    #[test]
+    fn unsatisfied_requirement_reports_status_without_executing() {
+        let mut app = app_with(matcher_from(&[NEEDS_TOOL]), vec![ssh("alpha", "10.0.0.1")]);
+
+        assert!(
+            send(&mut app, KeyCode::Enter).is_none(),
+            "a missing requirement must not execute"
+        );
+        assert!(app.status.contains("avahi-tui-absent-tool-xyz"));
+        assert_eq!(app.mode, AppMode::Browse);
+    }
+
+    #[test]
+    fn optional_requirement_does_not_block_execution() {
+        let mut app = app_with(
+            matcher_from(&[OPTIONAL_REQ]),
+            vec![ssh("alpha", "10.0.0.1")],
+        );
+
+        let command = send(&mut app, KeyCode::Enter).expect("optional requirement is skipped");
+        assert_eq!(command.argv, vec!["echo", "hi"]);
+    }
+
+    #[test]
+    fn bad_template_reports_status_instead_of_crashing_the_loop() {
+        let mut app = app_with(
+            matcher_from(&[BAD_TEMPLATE]),
+            vec![ssh("alpha", "10.0.0.1")],
+        );
+
+        // `send` unwraps the handler Result, so reaching the assert proves the
+        // error never propagated out of the event loop.
+        assert!(send(&mut app, KeyCode::Enter).is_none());
+        assert!(app.status.contains("cannot run `bad-template`"));
+        assert_eq!(app.mode, AppMode::Browse);
+    }
+
+    #[test]
+    fn fork_failure_reports_status_and_stays_in_browse() {
+        let mut app = app_with(
+            matcher_from(&[FORK_MISSING_BINARY]),
+            vec![ssh("alpha", "10.0.0.1")],
+        );
+
+        assert!(send(&mut app, KeyCode::Enter).is_none());
+        // The message names both the action and the missing binary.
+        assert!(app.status.contains("cannot run `ghost`"));
+        assert!(
+            app.status
+                .contains("command `avahi-tui-absent-binary-xyz` not found")
+        );
+        assert_eq!(app.mode, AppMode::Browse);
+    }
+
+    #[test]
+    fn failed_action_closes_an_open_picker() {
+        // Two actions match, opening the picker; selecting the broken one must
+        // both report the error and drop the picker, not leave it dangling.
+        let mut app = app_with(
+            matcher_from(&[SSH, BAD_TEMPLATE]),
+            vec![ssh("alpha", "10.0.0.1")],
+        );
+
+        assert!(send(&mut app, KeyCode::Enter).is_none());
+        assert_eq!(app.mode, AppMode::ActionPicker);
+        assert_eq!(app.action_matches.len(), 2);
+
+        // action_index 1 is the bad-template command (insertion order).
+        send(&mut app, KeyCode::Down);
+        assert!(send(&mut app, KeyCode::Enter).is_none());
+        assert_eq!(app.mode, AppMode::Browse);
+        assert!(app.action_matches.is_empty());
+        assert!(app.status.contains("cannot run `bad-template`"));
     }
 }

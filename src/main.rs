@@ -13,7 +13,7 @@ mod ui;
 
 use app::App;
 use cli::CliCommand;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, WrapErr};
 
 fn main() -> Result<()> {
     color_eyre::install()?;
@@ -39,7 +39,8 @@ fn main() -> Result<()> {
     drop(discovery);
 
     if let Some(action) = exec_action {
-        process::exec(action)?;
+        let command_line = action.argv.join(" ");
+        process::exec(action).wrap_err_with(|| format!("failed to run `{command_line}`"))?;
     }
 
     Ok(())
