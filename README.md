@@ -3,7 +3,7 @@
 
 <div align="center">
 
-**TUI browser for service discovery and hackable fuzzy finder.**
+**Browse local DNS-SD services, filter them, and run custom actions from a terminal UI.**
 
 ![GitHub Release](https://img.shields.io/github/v/release/abbyssoul/avahi-tui?display_name=tag&color=%23a6a)
 [![Crates.io](https://img.shields.io/crates/v/avahi-tui.svg)](https://crates.io/crates/avahi-tui)
@@ -160,3 +160,8 @@ asks which exact instance to use.
 
 For the full command file format, examples, and overlay rules, see
 [docs/actions.md](docs/actions.md).
+
+## Contributing
+
+Development setup, required system packages, and local verification commands are
+documented in [CONTRIBUTING.md](CONTRIBUTING.md).

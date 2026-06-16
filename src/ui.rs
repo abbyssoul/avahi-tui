@@ -231,11 +231,13 @@ fn render_services(frame: &mut Frame<'_>, app: &App, area: Rect) {
     render_list_panel(
         frame,
         area,
-        " services ",
-        app.selected,
-        total,
-        &widths,
-        empty,
+        ListPanelSpec {
+            label: " services ",
+            selected: app.selected,
+            total,
+            widths: &widths,
+            empty,
+        },
         |index| {
             service_row(
                 &app.visible_groups[index],
@@ -283,7 +285,10 @@ fn service_row(group: &ServiceGroup, selected: bool, matches: usize) -> Row<'sta
     Row::new(vec![
         Cell::from(Line::from(vec![gutter, Span::styled("●", base.fg(color))])),
         Cell::from(Span::styled(group.label.clone(), name_style)),
-        Cell::from(Span::styled(short_type(&group.service_type), base.fg(color))),
+        Cell::from(Span::styled(
+            short_type(&group.service_type),
+            base.fg(color),
+        )),
         Cell::from(count),
         Cell::from(matches_cell),
         Cell::from(Span::styled(host.to_string(), base.fg(FG_DIM))),
@@ -353,14 +358,20 @@ fn render_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     // instance tree
     rows.push(blank_row());
-    rows.push(section_row(&format!("instances ({})", group.instances.len())));
+    rows.push(section_row(&format!(
+        "instances ({})",
+        group.instances.len()
+    )));
     let last = group.instances.len().saturating_sub(1);
     for (i, record) in group.instances.iter().enumerate() {
         let branch = if i == last { "└─" } else { "├─" };
         rows.push(Row::new(vec![
             Cell::from(Line::from(vec![
                 Span::styled(format!(" {branch} "), Style::default().fg(ACCENT_DIM)),
-                Span::styled("●", Style::default().fg(category_color(&record.service_type))),
+                Span::styled(
+                    "●",
+                    Style::default().fg(category_color(&record.service_type)),
+                ),
             ])),
             Cell::from(Line::from(vec![
                 Span::styled(instance_endpoint(record), Style::default().fg(Color::White)),
@@ -406,7 +417,10 @@ fn field_row(label: &str, value: &str, value_color: Color) -> Row<'static> {
             format!("{label:>7} "),
             Style::default().fg(FG_DIM),
         )),
-        Cell::from(Span::styled(value.to_string(), Style::default().fg(value_color))),
+        Cell::from(Span::styled(
+            value.to_string(),
+            Style::default().fg(value_color),
+        )),
     ])
 }
 
@@ -474,11 +488,13 @@ fn render_commands(frame: &mut Frame<'_>, app: &App, area: Rect) {
     render_list_panel(
         frame,
         area,
-        " commands ",
-        app.selected,
-        total,
-        &widths,
-        empty,
+        ListPanelSpec {
+            label: " commands ",
+            selected: app.selected,
+            total,
+            widths: &widths,
+            empty,
+        },
         |index| command_row(&app.command_groups[index], index == app.selected),
     );
 }
@@ -585,7 +601,10 @@ fn render_command_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
             rows.push(Row::new(vec![
                 Cell::from(Line::from(vec![
                     Span::styled(format!(" {branch} "), Style::default().fg(ACCENT_DIM)),
-                    Span::styled("●", Style::default().fg(category_color(&service.service_type))),
+                    Span::styled(
+                        "●",
+                        Style::default().fg(category_color(&service.service_type)),
+                    ),
                 ])),
                 Cell::from(Line::from(vec![
                     Span::styled(service.label.clone(), Style::default().fg(Color::White)),
@@ -644,7 +663,10 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 
     // right-aligned status message
-    let status = Span::styled(format!("  {} ", app.status), Style::default().fg(ACCENT_DIM));
+    let status = Span::styled(
+        format!("  {} ", app.status),
+        Style::default().fg(ACCENT_DIM),
+    );
     push_right_aligned(&mut spans, vec![status], area.width);
 
     frame.render_widget(
@@ -692,22 +714,26 @@ fn render_type_filter(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn render_grouping(frame: &mut Frame<'_>, app: &App) {
-    let items = build_list_items(&GroupingMode::ALL, app.grouping_index, |mode, selected, base| {
-        let active = *mode == app.filter.grouping;
-        let marker = if active {
-            Span::styled(" ● ", base.fg(GOOD))
-        } else {
-            Span::styled(" ○ ", base.fg(FG_DIM))
-        };
-        Line::from(vec![
-            gutter_span(selected),
-            marker,
-            Span::styled(
-                mode.to_string(),
-                base.fg(Color::White).add_modifier(Modifier::BOLD),
-            ),
-        ])
-    });
+    let items = build_list_items(
+        &GroupingMode::ALL,
+        app.grouping_index,
+        |mode, selected, base| {
+            let active = *mode == app.filter.grouping;
+            let marker = if active {
+                Span::styled(" ● ", base.fg(GOOD))
+            } else {
+                Span::styled(" ○ ", base.fg(FG_DIM))
+            };
+            Line::from(vec![
+                gutter_span(selected),
+                marker,
+                Span::styled(
+                    mode.to_string(),
+                    base.fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+            ])
+        },
+    );
     render_popup(
         frame,
         " group by ",
@@ -719,29 +745,33 @@ fn render_grouping(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn render_action_picker(frame: &mut Frame<'_>, app: &App) {
-    let items = build_list_items(&app.action_matches, app.action_index, |action, selected, base| {
-        let needs = action.needs_instance && action.matching_records.len() > 1;
-        let description = action
-            .command
-            .action
-            .description
-            .as_deref()
-            .or(action.command.description.as_deref())
-            .unwrap_or("");
-        let mut spans = vec![
-            gutter_span(selected),
-            Span::styled("★ ", base.fg(STAR)),
-            Span::styled(
-                action.command.name.clone(),
-                base.fg(GOOD).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!(" — {description}"), base.fg(Color::White)),
-        ];
-        if needs {
-            spans.push(Span::styled("  ⊙ choose instance", base.fg(WARN)));
-        }
-        Line::from(spans)
-    });
+    let items = build_list_items(
+        &app.action_matches,
+        app.action_index,
+        |action, selected, base| {
+            let needs = action.needs_instance && action.matching_records.len() > 1;
+            let description = action
+                .command
+                .action
+                .description
+                .as_deref()
+                .or(action.command.description.as_deref())
+                .unwrap_or("");
+            let mut spans = vec![
+                gutter_span(selected),
+                Span::styled("★ ", base.fg(STAR)),
+                Span::styled(
+                    action.command.name.clone(),
+                    base.fg(GOOD).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" — {description}"), base.fg(Color::White)),
+            ];
+            if needs {
+                spans.push(Span::styled("  ⊙ choose instance", base.fg(WARN)));
+            }
+            Line::from(spans)
+        },
+    );
     render_popup(
         frame,
         " matching actions ",
@@ -779,15 +809,19 @@ fn render_service_picker(frame: &mut Frame<'_>, app: &App) {
     let group = app.command_groups.get(app.selected);
     let command_name = group.map(|g| g.command.name.clone()).unwrap_or_default();
     let services = group.map(|g| g.services.as_slice()).unwrap_or(&[]);
-    let items = build_list_items(services, app.service_picker_index, |service, selected, base| {
-        let host = service.hostname.as_deref().unwrap_or("…resolving");
-        Line::from(vec![
-            gutter_span(selected),
-            Span::styled("● ", base.fg(category_color(&service.service_type))),
-            Span::styled(service.label.clone(), base.fg(Color::White)),
-            Span::styled(format!("  {host}"), base.fg(FG_DIM)),
-        ])
-    });
+    let items = build_list_items(
+        services,
+        app.service_picker_index,
+        |service, selected, base| {
+            let host = service.hostname.as_deref().unwrap_or("…resolving");
+            Line::from(vec![
+                gutter_span(selected),
+                Span::styled("● ", base.fg(category_color(&service.service_type))),
+                Span::styled(service.label.clone(), base.fg(Color::White)),
+                Span::styled(format!("  {host}"), base.fg(FG_DIM)),
+            ])
+        },
+    );
 
     render_popup(
         frame,
@@ -1046,31 +1080,38 @@ fn list_title(label: &str, total: usize, selected: usize, inner_h: usize) -> Lin
 
 /// Render a scrollable left-hand list panel: title, empty-state, the visible row
 /// window, and a scrollbar. `row_at` builds the row for a given index.
+struct ListPanelSpec<'a> {
+    label: &'a str,
+    selected: usize,
+    total: usize,
+    widths: &'a [Constraint],
+    empty: Vec<Line<'static>>,
+}
+
 fn render_list_panel(
     frame: &mut Frame<'_>,
     area: Rect,
-    label: &str,
-    selected: usize,
-    total: usize,
-    widths: &[Constraint],
-    empty: Vec<Line<'static>>,
+    spec: ListPanelSpec<'_>,
     mut row_at: impl FnMut(usize) -> Row<'static>,
 ) {
     let inner_h = area.height.saturating_sub(2) as usize;
-    let block = panel().title(list_title(label, total, selected, inner_h));
-    if total == 0 {
-        frame.render_widget(Paragraph::new(empty).block(block), area);
+    let block = panel().title(list_title(spec.label, spec.total, spec.selected, inner_h));
+    if spec.total == 0 {
+        frame.render_widget(Paragraph::new(spec.empty).block(block), area);
         return;
     }
-    let offset = scroll_offset(selected, total, inner_h);
-    let rows: Vec<Row> = (offset..total).take(inner_h).map(&mut row_at).collect();
+    let offset = scroll_offset(spec.selected, spec.total, inner_h);
+    let rows: Vec<Row> = (offset..spec.total)
+        .take(inner_h)
+        .map(&mut row_at)
+        .collect();
     frame.render_widget(
-        Table::new(rows, widths.iter().copied())
+        Table::new(rows, spec.widths.iter().copied())
             .column_spacing(1)
             .block(block),
         area,
     );
-    render_scrollbar(frame, area, total, inner_h, offset);
+    render_scrollbar(frame, area, spec.total, inner_h, offset);
 }
 
 /// Render the shared tail of the two detail panes: clamp the requested scroll to

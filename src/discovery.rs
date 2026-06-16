@@ -1,11 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    net::IpAddr,
-    str::FromStr,
-    sync::mpsc,
-    thread,
-    time::Duration,
-};
+use std::{collections::BTreeMap, net::IpAddr, str::FromStr, sync::mpsc, thread, time::Duration};
 
 use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;

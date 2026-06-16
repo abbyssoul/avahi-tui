@@ -1,0 +1,42 @@
+name: Packaging or install issue
+description: Report problems installing or running packaged builds.
+title: "Install: "
+labels: ["packaging"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What install or startup problem did you hit?
+    validations:
+      required: true
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Install method
+      options:
+        - GitHub Release .deb
+        - cargo install
+        - Built from source
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        OS:
+        Architecture:
+        avahi-tui version:
+        Avahi package/version:
+    validations:
+      required: true
+  - type: textarea
+    id: command_output
+    attributes:
+      label: Command output
+      description: Paste the install command and full output.
+      render: text
+    validations:
+      required: true

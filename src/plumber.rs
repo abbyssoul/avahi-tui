@@ -521,9 +521,7 @@ mode = "execute"
     fn duplicate_within_one_layer_is_rejected() {
         let mut builder = MatcherBuilder::new();
         builder.start_layer();
-        builder
-            .add_str("a", &command_toml("ssh", "ssh a"))
-            .unwrap();
+        builder.add_str("a", &command_toml("ssh", "ssh a")).unwrap();
         let err = builder
             .add_str("b", &command_toml("ssh", "ssh b"))
             .unwrap_err();

@@ -9,6 +9,16 @@ license-file = "LICENSE"
 keywords = ["avahi", "tui", "zeroconf", "dns-sd", "service discovery", "plumber"]
 categories = ["command-line-utilities", "network-programming"]
 
+[package.metadata.deb]
+maintainer = "Ivan Ryabov <abbyssoul@gmail.com>"
+copyright = "2026, Ivan Ryabov <abbyssoul@gmail.com>"
+depends = "$auto"
+assets = [
+    ["target/release/avahi-tui", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/avahi-tui/README.md", "644"],
+    ["LICENSE", "usr/share/doc/avahi-tui/LICENSE", "644"],
+    ["actions/*.toml", "etc/avahi-tui/commands/", "644"],
+]
 
 
 [dependencies]

@@ -1,0 +1,39 @@
+name: Command config help
+description: Get help writing or debugging a custom command file.
+title: "Command config: "
+labels: ["question", "commands"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What service do you want to match, and what command should run?
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Command file
+      description: Paste the TOML command file.
+      render: toml
+    validations:
+      required: true
+  - type: textarea
+    id: service
+    attributes:
+      label: Service details
+      description: Paste the relevant service fields from the UI if available.
+      placeholder: |
+        name:
+        service_type:
+        domain:
+        hostname:
+        address:
+        port:
+        txt:
+  - type: textarea
+    id: output
+    attributes:
+      label: Validation output
+      description: Output from `avahi-tui list-commands` if it fails.
+      render: text

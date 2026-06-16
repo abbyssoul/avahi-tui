@@ -73,7 +73,9 @@ pub fn parse() -> Result<Cli> {
         Some((name, _)) => {
             return Err(clap::Error::raw(
                 ErrorKind::InvalidSubcommand,
-                format!("unknown subcommand `{name}`; use `list-commands` to see available commands\n"),
+                format!(
+                    "unknown subcommand `{name}`; use `list-commands` to see available commands\n"
+                ),
             )
             .into());
         }
