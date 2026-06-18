@@ -144,6 +144,34 @@ The result is a small local service browser that behaves like a configurable
 launcher: discover services, narrow the list, choose a matching action, and run
 the command built from that service's fields.
 
+### Architecture
+
+Internally those moving parts live in three deliberately decoupled modules, so
+the project is easy to extend and hack on. Each is designed to be swapped or
+reused independently:
+
+1. **Discovery** (`src/discovery/`) — the producer of *entries*. An entry is a
+   discovered record described entirely by its attributes (name, type, host,
+   address, port, TXT, …). A backend implements the `Discovery` trait and emits
+   `Entry` values; `Entry` is the only contract the rest of the program depends
+   on. The mDNS/Avahi backend is the default, with a built-in sample backend for
+   `--fake-discovery` — but you could drop in a different DNS-SD source, a static
+   file, or an SSDP/UPnP browser without touching anything else.
+2. **Plumber** (`src/plumber/`) — the rules engine. A serializable collection of
+   command rules (the TOML command files) is matched against entries by their
+   attributes; multiple rules can match one entry, and a matching rule can be
+   executed. It depends only on `Entry`, never on the UI, and sits behind a
+   `RuleEngine` trait so an alternative matching strategy can be substituted.
+3. **UI** (`src/ui/`) — ties discovery and the rules engine together for a person
+   at the terminal: CLI parsing, config and keymap loading, the application
+   state machine, and rendering. It depends on the other two; they do not depend
+   on it.
+
+The dependency flow is one-directional — `discovery ← plumber ← ui` — wired
+together in `main.rs`. The two trait seams (`Discovery` and `RuleEngine`) are the
+intended extension points: implement a trait, swap it in at the composition root,
+and experiment. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup.
+
 ## UI
 
 Default keys follow Vim-style conventions:

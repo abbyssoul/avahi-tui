@@ -11,7 +11,7 @@ mod mdns;
 
 use std::sync::mpsc;
 
-pub use entry::{Entry, EntryGroup, EntryId, GroupingMode, group_entries};
+pub use entry::{Entry, EntryGroup, EntryId, GroupingMode, decode_dns_sd_escapes, group_entries};
 
 /// An event emitted by a discovery backend.
 #[derive(Debug, Clone)]

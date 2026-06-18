@@ -1,0 +1,55 @@
+name: Fuzz
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    # Mondays 03:00 UTC — longer soak run.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds to run each fuzz target"
+        default: "300"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xorg-dev libxcb-shape0-dev libxcb-xfixes0-dev clang avahi-daemon libavahi-client-dev
+
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Pick duration
+        id: dur
+        run: |
+          case "${{ github.event_name }}" in
+            schedule)         echo "seconds=600" >> "$GITHUB_OUTPUT" ;;
+            workflow_dispatch) echo "seconds=${{ github.event.inputs.seconds }}" >> "$GITHUB_OUTPUT" ;;
+            *)                echo "seconds=60"  >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Run fuzz targets
+        run: scripts/fuzz.sh "${{ steps.dur.outputs.seconds }}"
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

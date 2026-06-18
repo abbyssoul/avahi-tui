@@ -72,15 +72,43 @@ Build a Debian package if `cargo-deb` is installed:
 cargo deb
 ```
 
+## Fuzzing
+
+The parser and the discovery entry model are exercised by [`cargo-fuzz`]
+(libFuzzer) targets in `fuzz/`. They require a nightly toolchain; the helper
+script installs `cargo-fuzz` if needed:
+
+```sh
+scripts/fuzz.sh            # run every target for 60s each
+scripts/fuzz.sh 300        # 5 minutes per target
+scripts/fuzz.sh 120 parse_command   # one target
+```
+
+Targets:
+
+- `parse_command`: the command/action file parser (`MatcherBuilder::add_str`).
+- `discovery_entry`: building, id-resolving, and grouping arbitrary entries.
+- `decode_dns_sd`: the DNS-SD decimal-escape name decoder.
+
+CI runs a short soak on every push/PR and a longer one on a weekly schedule
+(`.github/workflows/fuzz.yml`); any crash inputs are uploaded as artifacts.
+
+[`cargo-fuzz`]: https://github.com/rust-fuzz/cargo-fuzz
+
 ## Project Layout
 
-- `src/`: application, UI, discovery, action matching, process launching, and
-  keybinding code.
+- `src/discovery/`: the discovery layer — produces `Entry` values behind the
+  `Discovery` trait (mDNS and fake backends).
+- `src/plumber/`: the rules engine — command-file parsing, matching, and
+  execution behind the `RuleEngine` trait.
+- `src/ui/`: CLI parsing, config/keymap loading, app state, and rendering.
+- `src/lib.rs` / `src/main.rs`: the library composition root and its thin binary.
+- `fuzz/`: `cargo-fuzz` targets; `scripts/fuzz.sh`: the fuzz runner.
 - `actions/`: bundled command examples installed as system command defaults in
   the Debian package.
 - `docs/actions.md`: custom command file reference.
 - `docs/keybindings.md`: keybinding configuration reference.
-- `.github/workflows/`: CI and release packaging workflows.
+- `.github/workflows/`: CI, fuzzing, and release packaging workflows.
 
 ## Contribution Guidelines
 
