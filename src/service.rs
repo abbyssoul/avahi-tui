@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    fmt,
     net::IpAddr,
     time::Instant,
 };
@@ -22,18 +21,16 @@ pub enum GroupingMode {
     LogicalService,
     Host,
     ServiceType,
-    Port,
-    Address,
     Command,
 }
 
 impl GroupingMode {
-    pub const ALL: [GroupingMode; 6] = [
+    /// The grouping modes surfaced as top-panel tabs, in display order. The
+    /// first entry is the default view shown at startup.
+    pub const TABS: [GroupingMode; 4] = [
         GroupingMode::LogicalService,
         GroupingMode::Host,
         GroupingMode::ServiceType,
-        GroupingMode::Port,
-        GroupingMode::Address,
         GroupingMode::Command,
     ];
 
@@ -42,16 +39,18 @@ impl GroupingMode {
             GroupingMode::LogicalService => "logical service",
             GroupingMode::Host => "host",
             GroupingMode::ServiceType => "service type",
-            GroupingMode::Port => "port",
-            GroupingMode::Address => "address",
             GroupingMode::Command => "command",
         }
     }
-}
 
-impl fmt::Display for GroupingMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.label())
+    /// Short label shown on the top-panel tab for this view.
+    pub fn tab_title(self) -> &'static str {
+        match self {
+            GroupingMode::LogicalService => "services",
+            GroupingMode::Host => "hosts",
+            GroupingMode::ServiceType => "types",
+            GroupingMode::Command => "commands",
+        }
     }
 }
 
@@ -246,14 +245,6 @@ fn group_key(record: &ServiceRecord, mode: GroupingMode) -> String {
             .clone()
             .unwrap_or_else(|| "<unresolved host>".to_string()),
         GroupingMode::ServiceType => record.service_type.clone(),
-        GroupingMode::Port => record
-            .port
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "<unknown port>".to_string()),
-        GroupingMode::Address => record
-            .address
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "<unknown address>".to_string()),
     }
 }
 
@@ -265,14 +256,6 @@ fn group_label(record: &ServiceRecord, mode: GroupingMode) -> String {
             .clone()
             .unwrap_or_else(|| "<unresolved host>".to_string()),
         GroupingMode::ServiceType => record.service_type.clone(),
-        GroupingMode::Port => record
-            .port
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "<unknown port>".to_string()),
-        GroupingMode::Address => record
-            .address
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "<unknown address>".to_string()),
     }
 }
 
@@ -466,24 +449,6 @@ mod tests {
             .find(|g| g.label == "_ssh._tcp")
             .expect("ssh group");
         assert_eq!(ssh.instances.len(), 2);
-    }
-
-    #[test]
-    fn grouping_by_port_and_address_uses_value_labels_and_fallbacks() {
-        let mut a = resolved("alpha", "_ssh._tcp");
-        a.port = Some(80);
-        a.address = Some("10.0.0.1".parse().unwrap());
-        let pending = ServiceRecord::new("ghost", "_ipp._tcp", "local");
-
-        let by_port = group_records(&[a.clone(), pending.clone()], GroupingMode::Port);
-        let port_labels: Vec<&str> = by_port.iter().map(|g| g.label.as_str()).collect();
-        assert!(port_labels.contains(&"80"));
-        assert!(port_labels.contains(&"<unknown port>"));
-
-        let by_address = group_records(&[a, pending], GroupingMode::Address);
-        let address_labels: Vec<&str> = by_address.iter().map(|g| g.label.as_str()).collect();
-        assert!(address_labels.contains(&"10.0.0.1"));
-        assert!(address_labels.contains(&"<unknown address>"));
     }
 
     #[test]

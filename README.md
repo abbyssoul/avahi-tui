@@ -128,9 +128,9 @@ avahi-tui
 1. Discovery finds DNS-SD service records on the network. Each record can carry
    fields such as service name, service type, domain, hostname, address, port,
    and TXT values.
-2. Filtering and grouping organize those records in the UI. You can fuzzy-search
-   the visible services, limit by service type, and group results by logical
-   service, host, service type, port, address, or matching command.
+2. Filtering and view tabs organize those records in the UI. You can fuzzy-search
+   the visible services, limit by service type, and switch the top-panel tab to
+   view discovery by service, host, service type, or matching command.
 3. Actions decide what can be done with a selected service. Action command files
    define match predicates such as "service type equals `_ssh._tcp`" or "TXT
    field contains a URL".
@@ -153,12 +153,15 @@ Default keys follow Vim-style conventions:
 - `enter`: show or run matching actions
 - `/`: fuzzy text filter
 - `t`: service type checklist filter
-- `g`: grouping selector
+- `tab` / `shift+tab` (or `←` / `→`): switch view tab
 - `?`: help
 - `q`: quit
 
-The service list supports fuzzy text search, service type filtering, and runtime
-grouping by logical service, host, service type, port, or address.
+The top panel exposes four tabs — services, hosts, types, and commands. Each tab
+swaps the list and details panes to view discovery from that angle: individual
+services, hosts and the services they offer, discovered service types, or
+configured commands and the services they match. The list also supports fuzzy
+text search and service type filtering.
 
 Keybindings are fully customizable: all built-in UI commands can be rebound with
 a keybindings config file. See [docs/keybindings.md](docs/keybindings.md) for

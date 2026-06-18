@@ -33,7 +33,6 @@ pub enum AppMode {
     Browse,
     Search,
     TypeFilter,
-    Grouping,
     ActionPicker,
     InstancePicker,
     ServicePicker,
@@ -51,7 +50,6 @@ pub struct App {
     pub selected: usize,
     pub mode: AppMode,
     pub type_filter_index: usize,
-    pub grouping_index: usize,
     pub action_matches: Vec<MatchResult>,
     pub action_index: usize,
     pub pending_action: Option<MatchResult>,
@@ -94,7 +92,6 @@ impl App {
             selected: 0,
             mode: AppMode::Browse,
             type_filter_index: 0,
-            grouping_index: 0,
             action_matches: Vec::new(),
             action_index: 0,
             pending_action: None,
@@ -272,10 +269,6 @@ impl App {
                 self.handle_type_filter_key(key);
                 Ok(None)
             }
-            AppMode::Grouping => {
-                self.handle_grouping_key(key);
-                Ok(None)
-            }
             AppMode::ActionPicker => self.handle_action_picker_key(key),
             AppMode::InstancePicker => self.handle_instance_picker_key(key),
             AppMode::ServicePicker => self.handle_service_picker_key(key),
@@ -299,13 +292,8 @@ impl App {
                 self.type_filter_index = 0;
                 self.mode = AppMode::TypeFilter;
             }
-            _ if self.keybindings.is("browse", "grouping", key) => {
-                self.grouping_index = GroupingMode::ALL
-                    .iter()
-                    .position(|mode| *mode == self.filter.grouping)
-                    .unwrap_or(0);
-                self.mode = AppMode::Grouping;
-            }
+            _ if self.keybindings.is("browse", "tab_next", key) => self.cycle_tab(1),
+            _ if self.keybindings.is("browse", "tab_prev", key) => self.cycle_tab(-1),
             _ if self.keybindings.is("browse", "same_host", key) => {
                 self.toggle_same_host_filter();
             }
@@ -365,22 +353,31 @@ impl App {
         }
     }
 
-    fn handle_grouping_key(&mut self, key: KeyEvent) {
-        match key.code {
-            _ if self.keybindings.is("grouping", "close", key) => self.return_to_browse(),
-            _ if self.keybindings.is("grouping", "down", key) => {
-                self.grouping_index = move_index(self.grouping_index, GroupingMode::ALL.len(), 1);
-            }
-            _ if self.keybindings.is("grouping", "up", key) => {
-                self.grouping_index = move_index(self.grouping_index, GroupingMode::ALL.len(), -1);
-            }
-            _ if self.keybindings.is("grouping", "select", key) => {
-                self.filter.grouping = GroupingMode::ALL[self.grouping_index];
-                self.return_to_browse();
-                self.recompute_visible();
-            }
-            _ => {}
+    /// Switch the active top-panel tab to the grouping mode at `index` within
+    /// [`GroupingMode::TABS`]. Switching views resets the cursor and detail
+    /// scroll so the new list starts cleanly from the top.
+    fn select_tab(&mut self, index: usize) {
+        let Some(&mode) = GroupingMode::TABS.get(index) else {
+            return;
+        };
+        if self.filter.grouping == mode {
+            return;
         }
+        self.filter.grouping = mode;
+        self.selected = 0;
+        self.details_scroll = 0;
+        self.recompute_visible();
+    }
+
+    /// Move to the next/previous tab, wrapping around the ends.
+    fn cycle_tab(&mut self, delta: isize) {
+        let len = GroupingMode::TABS.len() as isize;
+        let current = GroupingMode::TABS
+            .iter()
+            .position(|mode| *mode == self.filter.grouping)
+            .unwrap_or(0) as isize;
+        let next = (current + delta).rem_euclid(len) as usize;
+        self.select_tab(next);
     }
 
     fn handle_action_picker_key(&mut self, key: KeyEvent) -> Result<Option<PreparedCommand>> {
@@ -933,18 +930,41 @@ mode = "execute"
     }
 
     #[test]
-    fn grouping_picker_changes_active_grouping() {
+    fn tab_keys_cycle_active_view_and_wrap() {
         let mut app = app_with(Matcher::default(), vec![ssh("alpha", "10.0.0.1")]);
+        assert_eq!(app.filter.grouping, GroupingMode::LogicalService);
 
-        send(&mut app, KeyCode::Char('g'));
-        assert_eq!(app.mode, AppMode::Grouping);
-        // ALL = [Logical, Host, ServiceType, ...]; two steps down lands on ServiceType.
-        send(&mut app, KeyCode::Down);
-        send(&mut app, KeyCode::Down);
-        send(&mut app, KeyCode::Enter);
-
+        // TABS = [LogicalService, Host, ServiceType, Command]; two forward steps
+        // land on the service-type view.
+        send(&mut app, KeyCode::Tab);
+        assert_eq!(app.filter.grouping, GroupingMode::Host);
+        send(&mut app, KeyCode::Tab);
         assert_eq!(app.filter.grouping, GroupingMode::ServiceType);
         assert_eq!(app.mode, AppMode::Browse);
+
+        // Stepping back past the first tab wraps to the last (command) tab.
+        send(&mut app, KeyCode::BackTab);
+        send(&mut app, KeyCode::BackTab);
+        send(&mut app, KeyCode::BackTab);
+        assert_eq!(app.filter.grouping, GroupingMode::Command);
+    }
+
+    #[test]
+    fn switching_tabs_resets_selection_and_scroll() {
+        let mut app = app_with(
+            Matcher::default(),
+            vec![ssh("alpha", "10.0.0.1"), ssh("beta", "10.0.0.2")],
+        );
+        send(&mut app, KeyCode::Down);
+        app.details_scroll = 3;
+        assert_eq!(app.selected, 1);
+
+        send(&mut app, KeyCode::Tab);
+        assert_eq!(app.selected, 0, "switching views resets the cursor");
+        assert_eq!(
+            app.details_scroll, 0,
+            "switching views resets detail scroll"
+        );
     }
 
     #[test]

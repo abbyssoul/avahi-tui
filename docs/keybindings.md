@@ -52,6 +52,7 @@ Supported special keys:
 - `esc` or `escape`
 - `space`
 - `tab`
+- `backtab` (Shift+Tab)
 - `backspace`
 
 Single-character keys are written as the character itself:
@@ -89,12 +90,16 @@ down = ["down", "j"]
 invoke = ["enter"]
 search = ["/"]
 type_filter = ["t"]
-grouping = ["g"]
+tab_next = ["tab", "right"]
+tab_prev = ["backtab", "left"]
 same_host = ["s"]
 details_down = ["d", "pagedown", "ctrl-d"]
 details_up = ["u", "pageup", "ctrl-u"]
 help = ["?"]
 ```
+
+`tab_next` and `tab_prev` switch the active top-panel view tab
+(services / hosts / types / commands), wrapping around the ends.
 
 ### Search Mode
 
@@ -119,18 +124,6 @@ close = ["esc", "t"]
 up = ["up", "k"]
 down = ["down", "j"]
 toggle = ["space", "enter"]
-```
-
-### Grouping Mode
-
-These commands apply in the grouping selector:
-
-```toml
-[grouping]
-close = ["esc", "g"]
-up = ["up", "k"]
-down = ["down", "j"]
-select = ["enter"]
 ```
 
 ### Picker Mode
@@ -186,10 +179,6 @@ down = ["down", "ctrl-n"]
 up = ["up", "ctrl-p"]
 down = ["down", "ctrl-n"]
 
-[grouping]
-up = ["up", "ctrl-p"]
-down = ["down", "ctrl-n"]
-
 [picker]
 up = ["up", "ctrl-p"]
 down = ["down", "ctrl-n"]
@@ -206,9 +195,6 @@ Use `x` to close modal views:
 
 ```toml
 [type_filter]
-close = ["esc", "x"]
-
-[grouping]
 close = ["esc", "x"]
 
 [picker]
