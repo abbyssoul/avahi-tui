@@ -29,7 +29,8 @@ impl Default for KeyBindings {
         bindings.set("browse", "invoke", &["enter"]);
         bindings.set("browse", "search", &["/"]);
         bindings.set("browse", "type_filter", &["t"]);
-        bindings.set("browse", "grouping", &["g"]);
+        bindings.set("browse", "tab_next", &["tab", "right"]);
+        bindings.set("browse", "tab_prev", &["backtab", "left"]);
         bindings.set("browse", "same_host", &["s"]);
         bindings.set("browse", "details_down", &["d", "pagedown", "ctrl-d"]);
         bindings.set("browse", "details_up", &["u", "pageup", "ctrl-u"]);
@@ -40,10 +41,6 @@ impl Default for KeyBindings {
         bindings.set("type_filter", "up", &["up", "k"]);
         bindings.set("type_filter", "down", &["down", "j"]);
         bindings.set("type_filter", "toggle", &["space", "enter"]);
-        bindings.set("grouping", "close", &["esc", "g"]);
-        bindings.set("grouping", "up", &["up", "k"]);
-        bindings.set("grouping", "down", &["down", "j"]);
-        bindings.set("grouping", "select", &["enter"]);
         bindings.set("picker", "close", &["esc"]);
         bindings.set("picker", "up", &["up", "k"]);
         bindings.set("picker", "down", &["down", "j"]);
@@ -131,6 +128,7 @@ impl KeySpec {
             "esc" | "escape" => KeyCode::Esc,
             "space" => KeyCode::Char(' '),
             "tab" => KeyCode::Tab,
+            "backtab" => KeyCode::BackTab,
             "backspace" => KeyCode::Backspace,
             value if value.chars().count() == 1 => KeyCode::Char(value.chars().next().unwrap()),
             _ => return Err(eyre!("unsupported key `{value}`")),

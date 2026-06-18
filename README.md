@@ -128,9 +128,9 @@ avahi-tui
 1. Discovery finds DNS-SD service records on the network. Each record can carry
    fields such as service name, service type, domain, hostname, address, port,
    and TXT values.
-2. Filtering and grouping organize those records in the UI. You can fuzzy-search
-   the visible services, limit by service type, and group results by logical
-   service, host, service type, port, address, or matching command.
+2. Filtering and view tabs organize those records in the UI. You can fuzzy-search
+   the visible services, limit by service type, and switch the top-panel tab to
+   view discovery by service, host, service type, or matching command.
 3. Actions decide what can be done with a selected service. Action command files
    define match predicates such as "service type equals `_ssh._tcp`" or "TXT
    field contains a URL".
@@ -144,6 +144,34 @@ The result is a small local service browser that behaves like a configurable
 launcher: discover services, narrow the list, choose a matching action, and run
 the command built from that service's fields.
 
+### Architecture
+
+Internally those moving parts live in three deliberately decoupled modules, so
+the project is easy to extend and hack on. Each is designed to be swapped or
+reused independently:
+
+1. **Discovery** (`src/discovery/`) — the producer of *entries*. An entry is a
+   discovered record described entirely by its attributes (name, type, host,
+   address, port, TXT, …). A backend implements the `Discovery` trait and emits
+   `Entry` values; `Entry` is the only contract the rest of the program depends
+   on. The mDNS/Avahi backend is the default, with a built-in sample backend for
+   `--fake-discovery` — but you could drop in a different DNS-SD source, a static
+   file, or an SSDP/UPnP browser without touching anything else.
+2. **Plumber** (`src/plumber/`) — the rules engine. A serializable collection of
+   command rules (the TOML command files) is matched against entries by their
+   attributes; multiple rules can match one entry, and a matching rule can be
+   executed. It depends only on `Entry`, never on the UI, and sits behind a
+   `RuleEngine` trait so an alternative matching strategy can be substituted.
+3. **UI** (`src/ui/`) — ties discovery and the rules engine together for a person
+   at the terminal: CLI parsing, config and keymap loading, the application
+   state machine, and rendering. It depends on the other two; they do not depend
+   on it.
+
+The dependency flow is one-directional — `discovery ← plumber ← ui` — wired
+together in `main.rs`. The two trait seams (`Discovery` and `RuleEngine`) are the
+intended extension points: implement a trait, swap it in at the composition root,
+and experiment. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup.
+
 ## UI
 
 Default keys follow Vim-style conventions:
@@ -153,12 +181,15 @@ Default keys follow Vim-style conventions:
 - `enter`: show or run matching actions
 - `/`: fuzzy text filter
 - `t`: service type checklist filter
-- `g`: grouping selector
+- `tab` / `shift+tab` (or `←` / `→`): switch view tab
 - `?`: help
 - `q`: quit
 
-The service list supports fuzzy text search, service type filtering, and runtime
-grouping by logical service, host, service type, port, or address.
+The top panel exposes four tabs — services, hosts, types, and commands. Each tab
+swaps the list and details panes to view discovery from that angle: individual
+services, hosts and the services they offer, discovered service types, or
+configured commands and the services they match. The list also supports fuzzy
+text search and service type filtering.
 
 Keybindings are fully customizable: all built-in UI commands can be rebound with
 a keybindings config file. See [docs/keybindings.md](docs/keybindings.md) for

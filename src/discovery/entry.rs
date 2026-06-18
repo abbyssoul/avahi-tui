@@ -1,39 +1,36 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    fmt,
     net::IpAddr,
     time::Instant,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ServiceId(pub String);
+pub struct EntryId(pub String);
 
-impl ServiceId {
+impl EntryId {
     pub fn registration_key(&self) -> String {
         self.0.split('|').take(3).collect::<Vec<_>>().join("|")
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ServiceGroupId(pub String);
+pub struct EntryGroupId(pub String);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GroupingMode {
     LogicalService,
     Host,
     ServiceType,
-    Port,
-    Address,
     Command,
 }
 
 impl GroupingMode {
-    pub const ALL: [GroupingMode; 6] = [
+    /// The grouping modes surfaced as top-panel tabs, in display order. The
+    /// first entry is the default view shown at startup.
+    pub const TABS: [GroupingMode; 4] = [
         GroupingMode::LogicalService,
         GroupingMode::Host,
         GroupingMode::ServiceType,
-        GroupingMode::Port,
-        GroupingMode::Address,
         GroupingMode::Command,
     ];
 
@@ -42,22 +39,24 @@ impl GroupingMode {
             GroupingMode::LogicalService => "logical service",
             GroupingMode::Host => "host",
             GroupingMode::ServiceType => "service type",
-            GroupingMode::Port => "port",
-            GroupingMode::Address => "address",
             GroupingMode::Command => "command",
+        }
+    }
+
+    /// Short label shown on the top-panel tab for this view.
+    pub fn tab_title(self) -> &'static str {
+        match self {
+            GroupingMode::LogicalService => "services",
+            GroupingMode::Host => "hosts",
+            GroupingMode::ServiceType => "types",
+            GroupingMode::Command => "commands",
         }
     }
 }
 
-impl fmt::Display for GroupingMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.label())
-    }
-}
-
 #[derive(Debug, Clone)]
-pub struct ServiceRecord {
-    pub id: ServiceId,
+pub struct Entry {
+    pub id: EntryId,
     pub name: String,
     pub service_type: String,
     pub domain: String,
@@ -68,7 +67,7 @@ pub struct ServiceRecord {
     pub last_seen: Instant,
 }
 
-impl ServiceRecord {
+impl Entry {
     pub fn new(
         name: impl Into<String>,
         service_type: impl Into<String>,
@@ -77,7 +76,7 @@ impl ServiceRecord {
         let name = name.into();
         let service_type = service_type.into();
         let domain = domain.into();
-        let id = ServiceId(format!("{name}|{service_type}|{domain}"));
+        let id = EntryId(format!("{name}|{service_type}|{domain}"));
         Self {
             id,
             name,
@@ -97,7 +96,7 @@ impl ServiceRecord {
             return self;
         }
 
-        self.id = ServiceId(format!(
+        self.id = EntryId(format!(
             "{}|{}|{}|{}|{}|{}",
             self.name,
             self.service_type,
@@ -109,8 +108,8 @@ impl ServiceRecord {
         self
     }
 
-    pub fn pending_id(&self) -> ServiceId {
-        ServiceId(format!(
+    pub fn pending_id(&self) -> EntryId {
+        EntryId(format!(
             "{}|{}|{}",
             self.name, self.service_type, self.domain
         ))
@@ -171,19 +170,19 @@ impl ServiceRecord {
 }
 
 #[derive(Debug, Clone)]
-pub struct ServiceGroup {
-    pub id: ServiceGroupId,
+pub struct EntryGroup {
+    pub id: EntryGroupId,
     pub label: String,
     pub service_type: String,
     pub domain: String,
     pub hostname: Option<String>,
     pub port: Option<u16>,
     pub txt: BTreeMap<String, String>,
-    pub instances: Vec<ServiceRecord>,
+    pub instances: Vec<Entry>,
 }
 
-pub fn group_records(records: &[ServiceRecord], mode: GroupingMode) -> Vec<ServiceGroup> {
-    let mut buckets: HashMap<String, Vec<ServiceRecord>> = HashMap::new();
+pub fn group_entries(records: &[Entry], mode: GroupingMode) -> Vec<EntryGroup> {
+    let mut buckets: HashMap<String, Vec<Entry>> = HashMap::new();
     for record in records {
         buckets
             .entry(group_key(record, mode))
@@ -191,7 +190,7 @@ pub fn group_records(records: &[ServiceRecord], mode: GroupingMode) -> Vec<Servi
             .push(record.clone());
     }
 
-    let mut groups: Vec<ServiceGroup> = buckets
+    let mut groups: Vec<EntryGroup> = buckets
         .into_values()
         .map(|mut instances| {
             instances.sort_by(|a, b| {
@@ -204,8 +203,8 @@ pub fn group_records(records: &[ServiceRecord], mode: GroupingMode) -> Vec<Servi
             });
             let first = instances[0].clone();
             let label = group_label(&first, mode);
-            let id = ServiceGroupId(format!("{}:{}", mode.label(), group_key(&first, mode)));
-            ServiceGroup {
+            let id = EntryGroupId(format!("{}:{}", mode.label(), group_key(&first, mode)));
+            EntryGroup {
                 id,
                 label,
                 service_type: first.service_type,
@@ -226,10 +225,10 @@ pub fn group_records(records: &[ServiceRecord], mode: GroupingMode) -> Vec<Servi
     groups
 }
 
-fn group_key(record: &ServiceRecord, mode: GroupingMode) -> String {
+fn group_key(record: &Entry, mode: GroupingMode) -> String {
     match mode {
         // `Command` grouping is handled by a dedicated path in `App`; if it ever
-        // reaches `group_records` it behaves like logical-service grouping.
+        // reaches `group_entries` it behaves like logical-service grouping.
         GroupingMode::LogicalService | GroupingMode::Command => format!(
             "{}|{}|{}|{}|{}",
             record.name,
@@ -246,18 +245,10 @@ fn group_key(record: &ServiceRecord, mode: GroupingMode) -> String {
             .clone()
             .unwrap_or_else(|| "<unresolved host>".to_string()),
         GroupingMode::ServiceType => record.service_type.clone(),
-        GroupingMode::Port => record
-            .port
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "<unknown port>".to_string()),
-        GroupingMode::Address => record
-            .address
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "<unknown address>".to_string()),
     }
 }
 
-fn group_label(record: &ServiceRecord, mode: GroupingMode) -> String {
+fn group_label(record: &Entry, mode: GroupingMode) -> String {
     match mode {
         GroupingMode::LogicalService | GroupingMode::Command => record.display_name(),
         GroupingMode::Host => record
@@ -265,14 +256,6 @@ fn group_label(record: &ServiceRecord, mode: GroupingMode) -> String {
             .clone()
             .unwrap_or_else(|| "<unresolved host>".to_string()),
         GroupingMode::ServiceType => record.service_type.clone(),
-        GroupingMode::Port => record
-            .port
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "<unknown port>".to_string()),
-        GroupingMode::Address => record
-            .address
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "<unknown address>".to_string()),
     }
 }
 
@@ -319,21 +302,21 @@ mod tests {
 
     #[test]
     fn logical_grouping_preserves_distinct_addresses() {
-        let mut a = ServiceRecord::new("host", "_ssh._tcp", "local");
+        let mut a = Entry::new("host", "_ssh._tcp", "local");
         a.hostname = Some("host.local".to_string());
         a.address = Some("192.168.1.10".parse().unwrap());
         a.port = Some(22);
         let mut b = a.clone();
         b.address = Some("192.168.1.11".parse().unwrap());
 
-        let groups = group_records(&[a, b], GroupingMode::LogicalService);
+        let groups = group_entries(&[a, b], GroupingMode::LogicalService);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].instances.len(), 2);
     }
 
     #[test]
     fn display_name_decodes_avahi_decimal_escapes() {
-        let record = ServiceRecord::new(
+        let record = Entry::new(
             r"HP\032OfficeJet\032Pro\0328020\032series\032\0919917FB\093",
             "_ipp._tcp",
             "local",
@@ -351,22 +334,22 @@ mod tests {
 
     #[test]
     fn display_name_decodes_utf8_byte_escapes() {
-        let record = ServiceRecord::new(r"Caf\195\169", "_http._tcp", "local");
+        let record = Entry::new(r"Caf\195\169", "_http._tcp", "local");
 
         assert_eq!(record.display_name(), "Café");
     }
 
     #[test]
     fn logical_group_label_uses_decoded_display_name() {
-        let record = ServiceRecord::new(r"HP\032Printer", "_ipp._tcp", "local");
+        let record = Entry::new(r"HP\032Printer", "_ipp._tcp", "local");
 
-        let groups = group_records(&[record], GroupingMode::LogicalService);
+        let groups = group_entries(&[record], GroupingMode::LogicalService);
 
         assert_eq!(groups[0].label, "HP Printer");
     }
 
-    fn resolved(name: &str, service_type: &str) -> ServiceRecord {
-        let mut record = ServiceRecord::new(name, service_type, "local");
+    fn resolved(name: &str, service_type: &str) -> Entry {
+        let mut record = Entry::new(name, service_type, "local");
         record.hostname = Some(format!("{name}.local"));
         record.address = Some("192.168.1.10".parse().unwrap());
         record.port = Some(22);
@@ -375,7 +358,7 @@ mod tests {
 
     #[test]
     fn field_exposes_all_supported_keys_and_aliases() {
-        let mut record = ServiceRecord::new("alpha", "_ssh._tcp", "local");
+        let mut record = Entry::new("alpha", "_ssh._tcp", "local");
         record.hostname = Some("alpha.local".to_string());
         record.address = Some("192.0.2.5".parse().unwrap());
         record.port = Some(22);
@@ -395,7 +378,7 @@ mod tests {
 
     #[test]
     fn pending_record_keeps_three_field_id_until_resolved() {
-        let pending = ServiceRecord::new("alpha", "_ssh._tcp", "local").with_instance_id();
+        let pending = Entry::new("alpha", "_ssh._tcp", "local").with_instance_id();
         assert_eq!(pending.id.0, "alpha|_ssh._tcp|local");
         assert!(!pending.has_instance_data());
 
@@ -415,7 +398,7 @@ mod tests {
 
     #[test]
     fn searchable_text_includes_every_instance_field() {
-        let mut record = ServiceRecord::new("alpha", "_ssh._tcp", "local");
+        let mut record = Entry::new("alpha", "_ssh._tcp", "local");
         record.hostname = Some("alpha.local".to_string());
         record.address = Some("192.0.2.5".parse().unwrap());
         record.port = Some(2222);
@@ -442,9 +425,9 @@ mod tests {
     fn grouping_by_host_buckets_records_and_labels_unresolved() {
         let a = resolved("alpha", "_ssh._tcp");
         let b = resolved("beta", "_http._tcp");
-        let pending = ServiceRecord::new("ghost", "_ipp._tcp", "local");
+        let pending = Entry::new("ghost", "_ipp._tcp", "local");
 
-        let groups = group_records(&[a, b, pending], GroupingMode::Host);
+        let groups = group_entries(&[a, b, pending], GroupingMode::Host);
 
         let labels: Vec<&str> = groups.iter().map(|g| g.label.as_str()).collect();
         assert!(labels.contains(&"alpha.local"));
@@ -458,7 +441,7 @@ mod tests {
         let b = resolved("beta", "_ssh._tcp");
         let c = resolved("gamma", "_http._tcp");
 
-        let groups = group_records(&[a, b, c], GroupingMode::ServiceType);
+        let groups = group_entries(&[a, b, c], GroupingMode::ServiceType);
 
         assert_eq!(groups.len(), 2);
         let ssh = groups
@@ -469,26 +452,8 @@ mod tests {
     }
 
     #[test]
-    fn grouping_by_port_and_address_uses_value_labels_and_fallbacks() {
-        let mut a = resolved("alpha", "_ssh._tcp");
-        a.port = Some(80);
-        a.address = Some("10.0.0.1".parse().unwrap());
-        let pending = ServiceRecord::new("ghost", "_ipp._tcp", "local");
-
-        let by_port = group_records(&[a.clone(), pending.clone()], GroupingMode::Port);
-        let port_labels: Vec<&str> = by_port.iter().map(|g| g.label.as_str()).collect();
-        assert!(port_labels.contains(&"80"));
-        assert!(port_labels.contains(&"<unknown port>"));
-
-        let by_address = group_records(&[a, pending], GroupingMode::Address);
-        let address_labels: Vec<&str> = by_address.iter().map(|g| g.label.as_str()).collect();
-        assert!(address_labels.contains(&"10.0.0.1"));
-        assert!(address_labels.contains(&"<unknown address>"));
-    }
-
-    #[test]
     fn groups_are_sorted_by_label() {
-        let groups = group_records(
+        let groups = group_entries(
             &[
                 resolved("charlie", "_ssh._tcp"),
                 resolved("alpha", "_ssh._tcp"),
@@ -518,7 +483,7 @@ mod tests {
         let mut b = a.clone();
         b.address = Some("10.0.0.2".parse().unwrap());
 
-        let groups = group_records(&[a, b], GroupingMode::Command);
+        let groups = group_entries(&[a, b], GroupingMode::Command);
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].instances.len(), 2);

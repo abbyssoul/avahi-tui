@@ -12,10 +12,11 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, AppMode, CommandGroup},
+    discovery::{Entry, EntryGroup, GroupingMode},
     plumber::MatchResult,
-    service::{GroupingMode, ServiceGroup, ServiceRecord},
 };
+
+use super::app::{App, AppMode, CommandGroup};
 
 // ── palette ──────────────────────────────────────────────────────────────
 const ACCENT: Color = Color::Rgb(0x7a, 0xa2, 0xf7); // soft blue
@@ -60,7 +61,6 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
 
     match app.mode {
         AppMode::TypeFilter => render_type_filter(frame, app),
-        AppMode::Grouping => render_grouping(frame, app),
         AppMode::ActionPicker => render_action_picker(frame, app),
         AppMode::InstancePicker => render_instance_picker(frame, app),
         AppMode::ServicePicker => render_service_picker(frame, app),
@@ -69,7 +69,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     }
 }
 
-// ── top bar ──────────────────────────────────────────────────────────────
+// ── top bar (view tabs) ────────────────────────────────────────────────────
 fn render_top_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let spinner = SPINNER[(app.ticks / 2) as usize % SPINNER.len()];
     let hosts = app
@@ -78,36 +78,38 @@ fn render_top_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .filter_map(|r| r.hostname.clone())
         .collect::<BTreeSet<_>>()
         .len();
-    let types = app.service_types().len();
 
-    let sep = || Span::styled("  •  ", Style::default().fg(ACCENT_DIM));
-    let num = |value: usize| {
-        Span::styled(
-            format!("{value}"),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
+    // Per-tab count shown alongside the title so the bar still surfaces the
+    // discovery totals it used to.
+    let tab_count = |mode: GroupingMode| match mode {
+        GroupingMode::LogicalService => app.records.len(),
+        GroupingMode::Host => hosts,
+        GroupingMode::ServiceType => app.service_types().len(),
+        GroupingMode::Command => app.matcher.command_count(),
     };
-    let label = |text: &str| Span::styled(format!(" {text}"), Style::default().fg(FG_DIM));
 
     let mut spans = vec![
         Span::styled(format!(" {spinner} "), Style::default().fg(GOOD)),
         Span::styled(
-            "avahi-tui",
+            "avahi-tui  ",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
-        sep(),
-        num(app.records.len()),
-        label("services   "),
-        num(hosts),
-        label("hosts   "),
-        num(types),
-        label("types"),
-        sep(),
-        num(app.matcher.command_count()),
-        label("commands"),
     ];
+
+    for mode in GroupingMode::TABS {
+        let active = mode == app.filter.grouping;
+        let text = format!(" {} {} ", mode.tab_title(), tab_count(mode));
+        let style = if active {
+            Style::default()
+                .fg(BG_BAR)
+                .bg(ACCENT)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(FG_DIM)
+        };
+        spans.push(Span::styled(text, style));
+        spans.push(Span::raw(" "));
+    }
 
     // right-aligned domain chip
     let domain = Span::styled(
@@ -169,8 +171,6 @@ fn render_filter_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
         chips.push(Span::raw(" "));
         chips.push(chip(&format!(" host:{host} ✕ "), Color::Magenta));
     }
-    chips.push(Span::raw(" "));
-    chips.push(chip(&format!(" group:{} ", app.filter.grouping), ACCENT));
 
     push_right_aligned(&mut spans, chips, area.width);
 
@@ -248,7 +248,7 @@ fn render_services(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-fn service_row(group: &ServiceGroup, selected: bool, matches: usize) -> Row<'static> {
+fn service_row(group: &EntryGroup, selected: bool, matches: usize) -> Row<'static> {
     let color = category_color(&group.service_type);
     let base = selection_style(selected);
     let gutter = gutter_span(selected);
@@ -629,7 +629,6 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let hints: &[(&str, &str)] = match app.mode {
         AppMode::Search => &[("type", "filter"), ("⏎/esc", "done"), ("^U", "clear")],
         AppMode::TypeFilter => &[("jk", "move"), ("space", "toggle"), ("esc", "close")],
-        AppMode::Grouping => &[("jk", "move"), ("⏎", "select"), ("esc", "close")],
         AppMode::ActionPicker | AppMode::InstancePicker | AppMode::ServicePicker => {
             &[("jk", "move"), ("⏎", "run"), ("esc", "cancel")]
         }
@@ -639,7 +638,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ("⏎", "open"),
             ("/", "search"),
             ("t", "types"),
-            ("g", "group"),
+            ("⇥", "view"),
             ("s", "same-host"),
             ("u/d", "scroll"),
             ("?", "help"),
@@ -710,37 +709,6 @@ fn render_type_filter(frame: &mut Frame<'_>, app: &App) {
         List::new(items),
         58,
         60,
-    );
-}
-
-fn render_grouping(frame: &mut Frame<'_>, app: &App) {
-    let items = build_list_items(
-        &GroupingMode::ALL,
-        app.grouping_index,
-        |mode, selected, base| {
-            let active = *mode == app.filter.grouping;
-            let marker = if active {
-                Span::styled(" ● ", base.fg(GOOD))
-            } else {
-                Span::styled(" ○ ", base.fg(FG_DIM))
-            };
-            Line::from(vec![
-                gutter_span(selected),
-                marker,
-                Span::styled(
-                    mode.to_string(),
-                    base.fg(Color::White).add_modifier(Modifier::BOLD),
-                ),
-            ])
-        },
-    );
-    render_popup(
-        frame,
-        " group by ",
-        "⏎ selects · esc closes",
-        List::new(items),
-        46,
-        40,
     );
 }
 
@@ -842,7 +810,7 @@ fn render_help(frame: &mut Frame<'_>) {
         ("enter", "run matching action(s)"),
         ("/", "fuzzy text filter"),
         ("t", "service-type checklist"),
-        ("g", "change grouping (incl. by command)"),
+        ("⇥ / ←→", "switch view tab (services/hosts/types/commands)"),
         ("s", "filter to selected host"),
         ("esc", "close modal / clear search"),
         ("?", "toggle this help"),
@@ -918,7 +886,7 @@ fn gutter_span(selected: bool) -> Span<'static> {
     }
 }
 
-fn instance_endpoint(record: &ServiceRecord) -> String {
+fn instance_endpoint(record: &Entry) -> String {
     let host = record.hostname.as_deref().unwrap_or("…resolving");
     let addr = record
         .address
@@ -1189,10 +1157,10 @@ mod tests {
 
     #[test]
     fn instance_endpoint_shows_placeholders_until_resolved() {
-        let pending = ServiceRecord::new("alpha", "_ssh._tcp", "local");
+        let pending = Entry::new("alpha", "_ssh._tcp", "local");
         assert_eq!(instance_endpoint(&pending), "…resolving  …:…");
 
-        let mut resolved = ServiceRecord::new("alpha", "_ssh._tcp", "local");
+        let mut resolved = Entry::new("alpha", "_ssh._tcp", "local");
         resolved.hostname = Some("alpha.local".to_string());
         resolved.address = Some("192.0.2.5".parse().unwrap());
         resolved.port = Some(22);
