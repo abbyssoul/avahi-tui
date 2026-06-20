@@ -135,10 +135,9 @@ fn emit_event(event: BrowseEvent, tx: &mpsc::Sender<DiscoveryEvent>) -> bool {
         BrowseEvent::Found(service) => tx
             .send(DiscoveryEvent::Upsert(record_from_service(&service)))
             .is_ok(),
-        BrowseEvent::Removed(service) => {
-            tx.send(DiscoveryEvent::Remove(id_from_removal(&service)))
-                .is_ok()
-        }
+        BrowseEvent::Removed(service) => tx
+            .send(DiscoveryEvent::Remove(id_from_removal(&service)))
+            .is_ok(),
     }
 }
 
@@ -244,7 +243,10 @@ mod tests {
 
         assert_eq!(record.name, "nas");
         assert_eq!(record.hostname.as_deref(), Some("nas.local"));
-        assert_eq!(record.primary_address(), Some("192.168.1.30".parse().unwrap()));
+        assert_eq!(
+            record.primary_address(),
+            Some("192.168.1.30".parse().unwrap())
+        );
         assert_eq!(record.port, Some(8080));
         assert_eq!(record.txt.get("path").map(String::as_str), Some("/admin"));
         assert!(record.has_instance_data());
@@ -252,8 +254,15 @@ mod tests {
 
     #[test]
     fn blank_host_and_zero_port_become_unresolved() {
-        let record =
-            upsert_record("pending", "_ipp._tcp", "local", Some(""), Vec::new(), Some(0), BTreeMap::new());
+        let record = upsert_record(
+            "pending",
+            "_ipp._tcp",
+            "local",
+            Some(""),
+            Vec::new(),
+            Some(0),
+            BTreeMap::new(),
+        );
 
         assert_eq!(record.hostname, None);
         assert!(record.addresses.is_empty());

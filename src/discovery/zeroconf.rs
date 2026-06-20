@@ -291,7 +291,10 @@ mod tests {
 
         assert_eq!(record.name, "nas");
         assert_eq!(record.hostname.as_deref(), Some("nas.local"));
-        assert_eq!(record.primary_address(), Some("192.168.1.30".parse().unwrap()));
+        assert_eq!(
+            record.primary_address(),
+            Some("192.168.1.30".parse().unwrap())
+        );
         assert_eq!(record.port, Some(8080));
         assert_eq!(record.txt.get("path").map(String::as_str), Some("/admin"));
         assert!(record.has_instance_data());

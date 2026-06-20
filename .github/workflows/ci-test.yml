@@ -1,4 +1,4 @@
-name: Build Rust project
+name: Check and Build Rust project
 
 on:
   push:
@@ -10,6 +10,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  format:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+    - name: Check formatting
+      run: cargo fmt -- --check
+
+  clippy:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        # sudo apt-get install -y avahi-daemon avahi-utils
+        sudo apt-get install -y xorg-dev libxcb-shape0-dev libxcb-xfixes0-dev clang avahi-daemon libavahi-client-dev
+    - uses: Swatinem/rust-cache@v2
+    - name: Run clippy
+      run: cargo clippy --locked --all-targets -- -D warnings
+
   build:
 
     runs-on: ubuntu-latest
@@ -21,15 +45,8 @@ jobs:
         sudo apt-get update
         # sudo apt-get install -y avahi-daemon avahi-utils
         sudo apt-get install -y xorg-dev libxcb-shape0-dev libxcb-xfixes0-dev clang avahi-daemon libavahi-client-dev
-
-    - name: Check formatting
-      run: cargo fmt -- --check
-
-    - name: Run clippy
-      run: cargo clippy --locked --all-targets -- -D warnings
-
+    - uses: Swatinem/rust-cache@v2
     - name: Build
       run: cargo build --locked --verbose
-
     - name: Run tests
       run: cargo test --locked --verbose
