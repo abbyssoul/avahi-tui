@@ -228,11 +228,16 @@ fn render_services(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Constraint::Fill(4),    // host
     ];
 
+    // Drive the panel header from the active tab so switching views (services /
+    // hosts / types — all rendered here) updates the title to match, instead of
+    // always reading " services ".
+    let label = format!(" {} ", app.filter.grouping.tab_title());
+
     render_list_panel(
         frame,
         area,
         ListPanelSpec {
-            label: " services ",
+            label: &label,
             selected: app.selected,
             total,
             widths: &widths,
